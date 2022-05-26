@@ -305,6 +305,8 @@ cython_debug/
 
 /gifs-old/
 
+/gifs/
+
 #!/wandb/*/files/media/images/
 
 /lightning_logs/
