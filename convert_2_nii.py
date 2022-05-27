@@ -109,45 +109,45 @@ def save_csv(output_path, data):
     a_file.close()
 
 scans_nii_path = os.path.join(
-    "U:", "lauraalvarez", "data", "liver", "train", "scans_nii"
+    "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "scans_nii"
 )
 
 overlays_nii_path = os.path.join(
-    "U:", "lauraalvarez", "data", "liver", "train", "overlays_nii"
+    "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "overlays_nii"
 )
 
 scans_path = os.path.join(
-    "U:", "lauraalvarez", "data", "liver", "train", "scans"
+    "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "scans"
 )
 
 overlays_path = os.path.join(
-    "U:", "lauraalvarez", "data", "liver", "train", "overlays"
+    "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "overlays"
 )
 
 train_images = sorted(
     glob.glob(
-        os.path.join("U:", "lauraalvarez", "data", "liver", "train", "scans", "*.mha")
+        os.path.join("/mnt/chansey", "lauraalvarez", "data", "liver", "test", "scans", "*.mha")
     )
 )
 train_labels = sorted(
     glob.glob(
         os.path.join(
-            "U:", "lauraalvarez", "data", "liver", "train", "overlays", "*.mha"
+            "/mnt/chansey/", "lauraalvarez", "data", "liver", "test", "overlays", "*.mha"
         )
     )
 )
 
-BASE_PATH = os.path.join( "U:", "lauraalvarez", "nnunet", "nnUNet_raw_data_base", "nnUNet_raw_data")
+BASE_PATH = os.path.join( "/mnt/chansey", "lauraalvarez", "nnunet", "nnUNet_raw_data_base", "nnUNet_raw_data")
 
 task_folder_name = os.path.join(BASE_PATH, task_name)
-train_image_dir = os.path.join(task_folder_name,'imagesTr')
-train_label_dir = os.path.join(task_folder_name,'labelsTr')
-test_dir = os.path.join(task_folder_name,'imagesTs')
+train_image_dir = os.path.join(task_folder_name,'imagesTs')
+train_label_dir = os.path.join(task_folder_name,'labelsTs')
+# test_dir = os.path.join(task_folder_name,'imagesTs')
 
 make_if_dont_exist(task_folder_name,overwrite = False)
 make_if_dont_exist(train_image_dir)
 make_if_dont_exist(train_label_dir)
-make_if_dont_exist(test_dir,overwrite= False)
+# make_if_dont_exist(test_dir,overwrite= False)
 
 
 equivalence_l = list()
@@ -168,7 +168,7 @@ for i in range(0, len(train_images)):
         sitk.WriteImage(img, os.path.join(train_image_dir, save_filename))
         filename = os.path.basename(train_images[i])
         labelpath =  os.path.join(
-                "U:", "lauraalvarez", "data", "liver", "train", "overlays", filename
+                "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "overlays", filename
             )
         print(f"Converting mask for {labelpath}")
         try:
