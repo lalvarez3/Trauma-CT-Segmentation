@@ -3,9 +3,11 @@ import SimpleITK as sitk
 import os
 import numpy as np
 import shutil
+from tqdm import tqdm
 
 
-task_name = 'Task501_LiverTrauma' #change here for different task name
+task_name = 'Task503_LiverSpleenTrauma' #change here for different task name
+MODE = 'test'
 
 def copy_and_rename(old_location,old_file_name,new_location,new_filename,delete_original = False):
 
@@ -87,14 +89,20 @@ def one_channel_overlay(img):
         # we need to transform Liver (6) to 1
         liver_channel = np.where((mha_img != 6), 0, mha_img)
         liver_channel = np.where((liver_channel == 6), 1, liver_channel)
-        new_labels = liver_channel
+        spleen_channel = np.where((mha_img != 7), 0, mha_img)
+        spleen_channel = np.where((spleen_channel == 6), 2, liver_channel)
+        new_labels = liver_channel + spleen_channel
     else:
         # each channel is a different label, we want 0(liver = 1) and 2(liver injure = 2) and the background to be 0 
         channels = list()
-        for i, channel in enumerate([0, 2]):  # TODO: desharcodead
-               channels.append(mha_img[channel, :, :, :])
+        for i, channel in enumerate([0,1,2,3,4,5]):  # TODO: desharcodead
+               c = mha_img[channel, :, :, :]
+               c = np.where((c == 1), i+1, c)
+               channels.append(c)
+
         # we got channels splitted with 1 each. if we add them we should get what we want
-        new_labels =  new_labels + channels[0] + channels[1]
+        chans = np.stack(channels, axis=0)
+        new_labels = np.max(chans, axis=0)
 
     return new_labels
                         
@@ -108,31 +116,31 @@ def save_csv(output_path, data):
     dict_writer.writerows(data)
     a_file.close()
 
-scans_nii_path = os.path.join(
-    "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "scans_nii"
-)
+# scans_nii_path = os.path.join(
+#     "/mnt/chansey", "lauraalvarez", "data", "liver_spleen_nnunet", MODE, "data"
+# )
 
-overlays_nii_path = os.path.join(
-    "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "overlays_nii"
-)
+# overlays_nii_path = os.path.join(
+#     "/mnt/chansey", "lauraalvarez", "data", "liver", MODE, "overlays_nii"
+# )
 
-scans_path = os.path.join(
-    "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "scans"
-)
+# scans_path = os.path.join(
+#     "/mnt/chansey", "lauraalvarez", "data", "liver", MODE, "scans"
+# )
 
-overlays_path = os.path.join(
-    "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "overlays"
-)
+# overlays_path = os.path.join(
+#     "/mnt/chansey", "lauraalvarez", "data", "liver", MODE, "overlays"
+# )
 
 train_images = sorted(
     glob.glob(
-        os.path.join("/mnt/chansey", "lauraalvarez", "data", "liver", "test", "scans", "*.mha")
+        os.path.join("/mnt/chansey", "lauraalvarez", "data", "liver_spleen_nnunet", MODE, "data", "*.mha")
     )
 )
 train_labels = sorted(
     glob.glob(
         os.path.join(
-            "/mnt/chansey/", "lauraalvarez", "data", "liver", "test", "overlays", "*.mha"
+            "/mnt/chansey/", "lauraalvarez", "data", "liver_spleen_nnunet", MODE, "mask", "*.mha"
         )
     )
 )
@@ -140,9 +148,15 @@ train_labels = sorted(
 BASE_PATH = os.path.join( "/mnt/chansey", "lauraalvarez", "nnunet", "nnUNet_raw_data_base", "nnUNet_raw_data")
 
 task_folder_name = os.path.join(BASE_PATH, task_name)
-train_image_dir = os.path.join(task_folder_name,'imagesTs')
-train_label_dir = os.path.join(task_folder_name,'labelsTs')
-# test_dir = os.path.join(task_folder_name,'imagesTs')
+
+if MODE == 'train':
+    train_image_dir = os.path.join(task_folder_name,'imagesTr')
+    train_label_dir = os.path.join(task_folder_name,'labelsTr')
+
+else:
+    train_image_dir = os.path.join(task_folder_name,'imagesTs')
+    train_label_dir = os.path.join(task_folder_name,'labelsTs')
+
 
 make_if_dont_exist(task_folder_name,overwrite = False)
 make_if_dont_exist(train_image_dir)
@@ -153,7 +167,7 @@ make_if_dont_exist(train_label_dir)
 equivalence_l = list()
 
 
-for i in range(0, len(train_images)):
+for i in tqdm(range(0, len(train_images))):
     
         save_filename = "TRMLIV_%03i_0000.nii.gz" % i
         equiv = {"mha": os.path.basename(train_images[i]).split(".")[0], "nii": save_filename}
@@ -161,36 +175,43 @@ for i in range(0, len(train_images)):
         print("Converting {}".format(train_images[i]))
         try:
             img = sitk.ReadImage(train_images[i])
+            img = sitk.DICOMOrient(img, 'RAS')        
+            print("Saving to  {}".format(os.path.join(train_image_dir, save_filename)))
+            sitk.WriteImage(img, os.path.join(train_image_dir, save_filename))
+            filename = os.path.basename(train_images[i])
+            labelpath =  os.path.join(
+                    "/mnt/chansey", "lauraalvarez", "data", "liver", MODE, "overlays", filename
+                )
+            print(f"Converting mask for {labelpath}")
+            save_filename = "TRMLIV_%03i.nii.gz" % i
+            try:
+                img_mask = sitk.ReadImage(labelpath)
+            except Exception as e:
+                print(e)
+                print("Error reading {}".format(labelpath))
+                continue
+            # Adapt the channel
+            img_array = one_channel_overlay(img_mask)
+            # Transform the label to the same size as the image
+            img_array = adapt_overlay(labelpath, train_images[i], img_array)
+            img_array = sitk.GetImageFromArray(img_array)
+
+            img_array.SetSpacing(img.GetSpacing())
+            img_array.SetOrigin(img.GetOrigin())
+            img_array.SetDirection(img.GetDirection())
+
+            keys = img.GetMetaDataKeys()
+            for key in keys:
+                img_array.SetMetaData(key, img.GetMetaData(key))
+            
+            print("Saving to  {}".format(os.path.join(train_label_dir, save_filename)))
+            sitk.WriteImage(img_array, os.path.join(train_label_dir, save_filename))
+
+            # Save the csv file for each iteration in case of error
+            save_csv(os.path.join(task_folder_name, f"equivalence_{MODE}.csv"), equivalence_l)
         except:
             print("Error reading {}".format(train_images[i]))
             continue
-        print("Saving to  {}".format(os.path.join(train_image_dir, save_filename)))
-        sitk.WriteImage(img, os.path.join(train_image_dir, save_filename))
-        filename = os.path.basename(train_images[i])
-        labelpath =  os.path.join(
-                "/mnt/chansey", "lauraalvarez", "data", "liver", "test", "overlays", filename
-            )
-        print(f"Converting mask for {labelpath}")
-        try:
-            img = sitk.ReadImage(labelpath)
-        except:
-            print("Error reading {}".format(labelpath))
-            continue
-        # Adapt the channel
-        img_array = one_channel_overlay(img)
-        # Transform the label to the same size as the image
-        img_array = adapt_overlay(labelpath, train_images[i], img_array)
-        img_array = sitk.GetImageFromArray(img_array)
-
-        keys = img.GetMetaDataKeys()
-        for key in keys:
-            img_array.SetMetaData(key, img.GetMetaData(key))
-        
-        print("Saving to  {}".format(os.path.join(train_label_dir, save_filename)))
-        sitk.WriteImage(img_array, os.path.join(train_label_dir, save_filename))
-
-        # Save the csv file for each iteration in case of error
-        save_csv(os.path.join(task_folder_name, "equivalence.csv"), equivalence_l)
     
 
-print("Finished converting Train to NII")
+print(f"Finished converting {MODE} to NII")
