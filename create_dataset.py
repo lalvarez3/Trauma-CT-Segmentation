@@ -27,27 +27,27 @@ if __name__ == '__main__':
     # download dataset from https://www.kaggle.com/insaff/massachusetts-roads-dataset
     # extract the zip file, then set the following path according to your system:
     base = os.path.join(
-                    "/mnt/chansey/", "lauraalvarez", "nnunet", "nnUNet_raw_data_base", "nnUNet_raw_data", "Task502_LiverTrauma"
+                    "/mnt/chansey/", "lauraalvarez", "nnunet", "nnUNet_raw_data_base", "nnUNet_raw_data", "Task503_LiverSpleenTrauma"
                 )
     # this folder should have the training and testing subfolders
 
     # now start the conversion to nnU-Net:
-    task_name = 'Task502_LiverTrauma'
+    task_name = 'Task503_LiverSpleenTrauma'
     target_base = join(nnUNet_raw_data, task_name)
 
 
     target_imagesTs = os.path.join(
-                    "/mnt/chansey/", "lauraalvarez", "nnunet", "nnUNet_raw_data_base", "nnUNet_raw_data", "Task502_LiverTrauma", "imagesTs"
+                    "/mnt/chansey/", "lauraalvarez", "nnunet", "nnUNet_raw_data_base", "nnUNet_raw_data", "Task503_LiverSpleenTrauma", "imagesTs"
                 )
             
     target_imagesTr = os.path.join(
-                    "/mnt/chansey/", "lauraalvarez", "nnunet", "nnUNet_raw_data_base", "nnUNet_raw_data", "Task502_LiverTrauma", "imagesTr",
+                    "/mnt/chansey/", "lauraalvarez", "nnunet", "nnUNet_raw_data_base", "nnUNet_raw_data", "Task503_LiverSpleenTrauma", "imagesTr",
                 )    
 
 
     # finally we can call the utility for generating a dataset.json
     generate_dataset_json(join(target_base, 'dataset.json'), target_imagesTr, target_imagesTs, (['Normal']),
-                          labels={0: 'background', 1: 'liver', 2:"injure"}, dataset_name=task_name, license='hands off!')
+                          labels={0: 'background', 1: 'liver', 2:"spleen", 3: "liver injury", 4: "spleen injury", 5: "liver vascular injury", 6: "spleen vacular injury"}, dataset_name=task_name, license='hands off!')
 
     """
     once this is completed, you can use the dataset like any other nnU-Net dataset. Note that since this is a 2D
