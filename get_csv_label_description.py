@@ -8,7 +8,7 @@ import shutil
 from tqdm import tqdm
 
 
-# change here for different task name
+ # change here for different task name
 
 
 def copy_and_rename(
@@ -45,8 +45,9 @@ def make_if_dont_exist(folder_path, overwrite=False):
         print(f"{folder_path} created!")
 
 
-def adapt_overlay(overlay_path, mha_data, label):
+def adapt_overlay(overlay_path, mha_path, label):
     # Load the mha
+    mha_data = sitk.ReadImage(mha_path)
     mha_org = mha_data.GetOrigin()[-1]
     # Load the mha image
     mha_img = sitk.GetArrayFromImage(mha_data)
@@ -87,7 +88,6 @@ def adapt_overlay(overlay_path, mha_data, label):
 
 def one_channel_overlay(img, organ):
     mha_img = sitk.GetArrayFromImage(img)
-    mha_img = mha_img.astype(np.int8)
 
     if len(mha_img.shape) == 3:
         z, h, w = mha_img.shape
@@ -169,35 +169,25 @@ def get_correct_index(index, filename, csv_data):
     if exist:
         index = csv_data.index(filename)
     else:
-        index = len(csv_data)
+        index = len(csv_data) + 1
 
     return index
 
-def channel_first(img_mask, img):
-    img = sitk.GetArrayFromImage(img)
-    if img.shape[0] != img_mask.shape[0]:
-        if img.shape[0] == img_mask.shape[-1] and img.shape[-1] == img_mask.shape[0]:
-            img_mask = img_mask.transpose((2, 1, 0))
-    return img_mask
 
 
 def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task505_SpleenTrauma"):
-
-    if MODE == "train": name = 'Tr'
-    else: name = 'Ts'
-
-    home = "U://"
-
+    # Change to get the right folder to check
     train_images = sorted(
         glob.glob(
             os.path.join(
-                home, "lauraalvarez", "data", organ, f"images{name}", "*.mha"
+                "/mnt/chansey", "lauraalvarez", "data", "_original_full_dataset", "data", "*.mha"
             )
         )
     )
 
+
     BASE_PATH = os.path.join(
-        home,
+        "/mnt/chansey",
         "lauraalvarez",
         "nnunet",
         "nnUNet_raw_data_base",
@@ -227,7 +217,6 @@ def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task
     make_if_dont_exist(task_folder_name, overwrite=False)
     make_if_dont_exist(train_image_dir)
     make_if_dont_exist(train_label_dir)
-    # make_if_dont_exist(test_dir,overwrite= False)
 
     no_spleen = list()
 
@@ -235,102 +224,41 @@ def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task
 
     for i in tqdm(range(0, len(train_images))):
 
-        # i = get_correct_index(i, os.path.basename(train_images[i]).split(".")[0], equivalence_l)
         save_filename = file_identifier + "_%03i_0000.nii.gz" % i
         equiv = {
             "mha": os.path.basename(train_images[i]).split(".")[0],
             "nii": save_filename,
         }
-        if equiv not in equivalence_l:
-            equivalence_l.append(equiv)
-            print("Converting {}".format(train_images[i]))
-        else:
-            print(f"{equiv} already exists. Skipping")
         try:
-            if not os.path.exists(os.path.join(train_image_dir, save_filename)):
-                # read the original image
-                img = sitk.ReadImage(train_images[i])
-                # Get the array from the image and recreate it without any extra metadata
-                img_array = sitk.GetArrayFromImage(img)
-                new_img = sitk.GetImageFromArray(img_array)
-                # Add the metadata we want to keep
-                new_img.SetSpacing(img.GetSpacing())
-                new_img.SetOrigin(img.GetOrigin())
-                new_img.SetDirection(img.GetDirection())
-                # Orient the image to RAS
-                img = sitk.DICOMOrient(new_img, "RAS")
-                # save the NII file
-                print("Saving to  {}".format(os.path.join(train_image_dir, save_filename)))
-                sitk.WriteImage(img, os.path.join(train_image_dir, save_filename))
-            # Read the new image we just created and use it to obtain metadata
-            # duplicate readings but it does not work okay otherwise.. -.-"
-            img = sitk.ReadImage(os.path.join(train_image_dir, save_filename))
             filename = os.path.basename(train_images[i])
             # get the correct index of the csv file
+            
             labelpath = os.path.join(
-                home,
-                "lauraalvarez",
-                "data",
-                organ,
-                f"labels{name}",
+                "/mnt/chansey", "lauraalvarez", "data", "_original_full_dataset",
+                "mask",
                 filename,
             )
 
             save_filename = file_identifier + "_%03i.nii.gz" % i
-            if not os.path.exists(os.path.join(train_label_dir, save_filename)):
-                print(f"Converting mask for {labelpath}")
-                try:
-                    img_mask = sitk.ReadImage(labelpath)
-                except Exception as e:
-                    print(e)
-                    print("Error reading {}".format(labelpath))
-                    continue
-                # Adapt the channel
-                img_array = one_channel_overlay(img_mask, organ)
-                # Transform the label to the same size as the image
-                if len(np.unique(img_array)) < 3:
-                    no_spleen.append({"file": os.path.basename(labelpath), "labels": np.unique(img_array)})
+            print(f"Converting mask for {labelpath}")
+            try:
+                img_mask = sitk.ReadImage(labelpath)
+            except Exception as e:
+                print(e)
+                print("Error reading {}".format(labelpath))
+                continue
+            # Adapt the channel
+            img_array = one_channel_overlay(img_mask, "other")
+            no_spleen.append({"file": os.path.basename(labelpath), "labels": np.unique(img_array)})
 
-                img_array = channel_first(img_array, img)
-                img_array = adapt_overlay(labelpath, img, img_array)
-                img_array = sitk.GetImageFromArray(img_array)
-
-                print("Saving to  {}".format(os.path.join(train_label_dir, save_filename)))
-                sitk.WriteImage(img_array, os.path.join(train_label_dir, save_filename))
-                print("Reading image again...")
-
-                img_array = sitk.ReadImage(os.path.join(train_label_dir, save_filename))
-                print("Orienting image...")
-                img_array = sitk.DICOMOrient(img_array, "RAS")
-                print(f"spacing: {img_array.GetSpacing()}")
-                img_array.SetSpacing(img.GetSpacing())
-                img_array.SetOrigin(img.GetOrigin())
-                print(f"img shape {img.GetSize()}")
-                print(f"img spacing {img.GetSpacing()}")
-                print(f"img origin {img.GetOrigin()}")
-                print(f"shape: {img_array.GetSize()}")
-                print(f"spacing: {img_array.GetSpacing()}")
-                print(f"origin: {img_array.GetOrigin()}")
-                print("Saving image again...")
-                sitk.WriteImage(img_array, os.path.join(train_label_dir, save_filename))
-            else:
-                print(f"{save_filename} already exists. Skipping")
-        # Save the csv file for each iteration in case of error
         except Exception as e:
             print(e)
             print("Error reading {}".format(train_images[i]))
             continue
 
     save_csv(
-        os.path.join(task_folder_name, f"equivalence_{MODE}.csv"), equivalence_l
+        os.path.join(task_folder_name, f"no_spleen_{MODE}.csv"), no_spleen
     )
-
-    if len(no_spleen) > 0:
-        save_csv(
-            os.path.join(task_folder_name, f"no_{organ}_{MODE}.csv"), no_spleen
-        )
-    else:
-        print(f"All labels for {organ} found")
 
     print(no_spleen)
 
@@ -338,14 +266,12 @@ def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task
 
 
 def main():
-    task_name = "Task509_NITrauma"
-    MODES = ["test"]
+    task_name = "Task504_LiverTrauma"
+    MODES = ["train", "test"]
     for MODE in MODES:
-        organ = "no_injury"
+        organ = "Liver"
         if organ == "Liver":
-            name = "TLIV"
-        elif organ == "no_injury":
-            name = "TNI"
+            name = "TRMLIV"
         else:
             name = "TRMSPL"
         convert_dataset(MODE, name, organ.lower(), task_name)

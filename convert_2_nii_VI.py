@@ -8,7 +8,7 @@ import shutil
 from tqdm import tqdm
 
 
-# change here for different task name
+ # change here for different task name
 
 
 def copy_and_rename(
@@ -122,6 +122,8 @@ def one_channel_overlay(img, organ):
             labels = [0,2]
         elif organ == "spleen":
             labels = [1,3]
+        elif organ == "vascular_injuries":
+            labels = [4,5]
         else:
             labels = [0,1,2,3,4,5]
         channels = list()
@@ -181,20 +183,19 @@ def channel_first(img_mask, img):
     return img_mask
 
 
-def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task505_SpleenTrauma"):
+def convert_dataset(MODE, file_identifier="TRM", organ="vascular_injuries", task_name="Task505_SpleenTrauma"):
 
     if MODE == "train": name = 'Tr'
     else: name = 'Ts'
+    home = "U:\\"
 
-    home = "U://"
-
-    train_images = sorted(
+    train_images = [sorted(
         glob.glob(
             os.path.join(
-                home, "lauraalvarez", "data", organ, f"images{name}", "*.mha"
+                home, "lauraalvarez", "data", organ, "mha", f"images{name}", "*.mha"
             )
         )
-    )
+    )[0]]
 
     BASE_PATH = os.path.join(
         home,
@@ -243,6 +244,7 @@ def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task
         }
         if equiv not in equivalence_l:
             equivalence_l.append(equiv)
+            print("")
             print("Converting {}".format(train_images[i]))
         else:
             print(f"{equiv} already exists. Skipping")
@@ -272,6 +274,7 @@ def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task
                 "lauraalvarez",
                 "data",
                 organ,
+                "mha",
                 f"labels{name}",
                 filename,
             )
@@ -288,7 +291,7 @@ def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task
                 # Adapt the channel
                 img_array = one_channel_overlay(img_mask, organ)
                 # Transform the label to the same size as the image
-                if len(np.unique(img_array)) < 3:
+                if len(np.unique(img_array)) <= 1:
                     no_spleen.append({"file": os.path.basename(labelpath), "labels": np.unique(img_array)})
 
                 img_array = channel_first(img_array, img)
@@ -338,16 +341,11 @@ def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task
 
 
 def main():
-    task_name = "Task509_NITrauma"
+    task_name = "Task506_VITrauma"
     MODES = ["test"]
     for MODE in MODES:
-        organ = "no_injury"
-        if organ == "Liver":
-            name = "TLIV"
-        elif organ == "no_injury":
-            name = "TNI"
-        else:
-            name = "TRMSPL"
+        organ = "vascular_injuries"
+        name = "VI"
         convert_dataset(MODE, name, organ.lower(), task_name)
 
 if __name__ == "__main__":
