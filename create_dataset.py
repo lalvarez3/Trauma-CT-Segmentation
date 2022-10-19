@@ -5,6 +5,8 @@ from nnunet.paths import nnUNet_raw_data, preprocessing_output_dir
 from nnunet.utilities.file_conversions import convert_2d_image_to_nifti
 import glob
 
+HOME = "/mnt/chansey/"
+
 if __name__ == '__main__':
     """
     nnU-Net was originally built for 3D images. It is also strongest when applied to 3D segmentation problems because a
@@ -29,19 +31,26 @@ if __name__ == '__main__':
     # this folder should have the training and testing subfolders
 
     # now start the conversion to nnU-Net:
-    task_name = "Task508_LiverTrauma"
-    labels = ["Liver", "Liver_Injure"]
+    task_name = "Task514_VISpleenTrauma"
+    labels = ["Spleen_Vascular_Injure"]
 
-    target_base = join(nnUNet_raw_data, task_name)
+    BASE_PATH = os.path.join(
+        HOME,
+        "lauraalvarez",
+        "nnunet",
+        "nnUNet_raw_data",
+    )
+
+    target_base = join(BASE_PATH, task_name)
 
     # create the dataset json file
     target_imagesTs = os.path.join(
-                    "U:\\", "lauraalvarez", "nnunet", "nnUNet_raw_data", task_name, "imagesTs"
+                    HOME, "lauraalvarez", "nnunet", "nnUNet_raw_data", task_name, "imagesTs"
                 )
 
     target_imagesTr = os.path.join(
-                    "U:\\", "lauraalvarez", "nnunet", "nnUNet_raw_data", task_name, "imagesTr",
+                    HOME, "lauraalvarez", "nnunet", "nnUNet_raw_data", task_name, "imagesTr",
                 )
 
     # finally we can call the utility for generating a dataset.json
-    generate_dataset_json(join("U:\\", "lauraalvarez", "nnunet", "nnUNet_raw_data", task_name, 'dataset.json'), target_imagesTr, target_imagesTs, (['CT']), labels={0: 'background', 1: labels[0], 2: labels[1]}, dataset_name=task_name, license='hands off!')
+    generate_dataset_json(join(HOME, "lauraalvarez", "nnunet", "nnUNet_raw_data", task_name, 'dataset.json'), target_imagesTr, target_imagesTs, (['CT']), labels={0: 'background', 1: labels[0]}, dataset_name=task_name, license='hands off!')

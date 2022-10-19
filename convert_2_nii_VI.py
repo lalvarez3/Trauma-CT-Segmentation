@@ -123,7 +123,8 @@ def one_channel_overlay(img, organ):
         elif organ == "spleen":
             labels = [1,3]
         elif organ == "vascular_injuries":
-            labels = [4,5]
+            # labels = [4,5]
+            labels = [5]
         else:
             labels = [0,1,2,3,4,5]
         channels = list()
@@ -150,31 +151,6 @@ def save_csv(output_path, data):
     a_file.close()
 
 
-def check_valid(path, filename):
-    file_path = os.path.join(path, filename)
-    if not os.path.exists(file_path):
-        return False
-    try:
-        img = sitk.ReadImage(file_path)
-        if img.GetSize()[0] == 0:
-            return False
-    except:
-        return False
-
-    return True
-
-def get_correct_index(index, filename, csv_data):
-    """
-    This function is used to get the correct index of the csv file.
-    """
-    exist = filename in csv_data
-    if exist:
-        index = csv_data.index(filename)
-    else:
-        index = len(csv_data)
-
-    return index
-
 def channel_first(img_mask, img):
     img = sitk.GetArrayFromImage(img)
     if img.shape[0] != img_mask.shape[0]:
@@ -187,15 +163,15 @@ def convert_dataset(MODE, file_identifier="TRM", organ="vascular_injuries", task
 
     if MODE == "train": name = 'Tr'
     else: name = 'Ts'
-    home = "U:\\"
+    home = "/mnt/chansey/"
 
-    train_images = [sorted(
+    train_images = sorted(
         glob.glob(
             os.path.join(
                 home, "lauraalvarez", "data", organ, "mha", f"images{name}", "*.mha"
             )
         )
-    )[0]]
+    )
 
     BASE_PATH = os.path.join(
         home,
@@ -341,8 +317,8 @@ def convert_dataset(MODE, file_identifier="TRM", organ="vascular_injuries", task
 
 
 def main():
-    task_name = "Task506_VITrauma"
-    MODES = ["test"]
+    task_name = "Task514_VISpleenTrauma"
+    MODES = ["train", "test"]
     for MODE in MODES:
         organ = "vascular_injuries"
         name = "VI"

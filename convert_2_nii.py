@@ -123,7 +123,7 @@ def one_channel_overlay(img, organ):
         elif organ == "spleen":
             labels = [1,3]
         else:
-            labels = [0,1,2,3,4,5]
+            labels = [0,1,2,3]
         channels = list()
         for i, channel in enumerate(labels):
             c = mha_img[channel, :, :, :]
@@ -186,7 +186,7 @@ def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task
     if MODE == "train": name = 'Tr'
     else: name = 'Ts'
 
-    home = "U://"
+    home = "/mnt/chansey"
 
     train_images = sorted(
         glob.glob(
@@ -338,14 +338,16 @@ def convert_dataset(MODE, file_identifier="TRM", organ="spleen", task_name="Task
 
 
 def main():
-    task_name = "Task509_NITrauma"
+    task_name = "Task510_LiverTraumaDGX"
     MODES = ["test"]
     for MODE in MODES:
-        organ = "no_injury"
+        organ = "Liver"
         if organ == "Liver":
             name = "TLIV"
-        elif organ == "no_injury":
+        elif organ == "no_injuries_extended":
             name = "TNI"
+        elif organ == "spleen_liver":
+            name = "TSpLi"
         else:
             name = "TRMSPL"
         convert_dataset(MODE, name, organ.lower(), task_name)

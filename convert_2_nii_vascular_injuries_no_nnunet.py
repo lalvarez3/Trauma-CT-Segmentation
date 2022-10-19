@@ -44,9 +44,8 @@ def make_if_dont_exist(folder_path, overwrite=False):
         print(f"{folder_path} created!")
 
 
-def adapt_overlay(overlay_path, mha_path, label):
+def adapt_overlay(overlay_path, mha_data, label):
     # Load the mha
-    mha_data = sitk.ReadImage(mha_path)
     mha_org = mha_data.GetOrigin()[-1]
     # Load the mha image
     mha_img = sitk.GetArrayFromImage(mha_data)
@@ -87,6 +86,7 @@ def adapt_overlay(overlay_path, mha_path, label):
 
 def one_channel_overlay(img):
     mha_img = sitk.GetArrayFromImage(img)
+    mha_img = mha_img.astype(np.int8)
 
     if len(mha_img.shape) == 3:
         z, h, w = mha_img.shape
@@ -110,19 +110,19 @@ def one_channel_overlay(img):
     chans = np.stack(channels, axis=0)
     new_labels = np.max(chans, axis=0)
 
-    values = np.unique(new_labels)
-    vi_classes = []
-    if not 5 in values: # Remove structues of the organs not containing VI
-        new_labels = np.where(new_labels == 1, 0, new_labels) # remove liver
-        new_labels = np.where(new_labels == 3, 0, new_labels) # remove liver injury
-    else: vi_classes.append('liver')
+    # values = np.unique(new_labels)
+    # vi_classes = []
+    # if not 5 in values: # Remove structues of the organs not containing VI
+    #     new_labels = np.where(new_labels == 1, 0, new_labels) # remove liver
+    #     new_labels = np.where(new_labels == 3, 0, new_labels) # remove liver injury
+    # else: vi_classes.append('liver')
 
-    if not 6 in values:
-        new_labels = np.where(new_labels == 2, 0, new_labels) # remove spleen
-        new_labels = np.where(new_labels == 4, 0, new_labels) # remove spleen injury
-    else: vi_classes.append('spleen')
+    # if not 6 in values:
+    #     new_labels = np.where(new_labels == 2, 0, new_labels) # remove spleen
+    #     new_labels = np.where(new_labels == 4, 0, new_labels) # remove spleen injury
+    # else: vi_classes.append('spleen')
 
-    return new_labels, vi_classes
+    return new_labels
 
 
 def save_csv(output_path, data):
@@ -135,19 +135,31 @@ def save_csv(output_path, data):
     dict_writer.writerows(data)
     a_file.close()
 
+def channel_first(img_mask, img):
+    img = sitk.GetArrayFromImage(img)
+    if img.shape[0] != img_mask.shape[0]:
+        if img.shape[0] == img_mask.shape[-1] and img.shape[-1] == img_mask.shape[0]:
+            img_mask = img_mask.transpose((2, 1, 0))
+    return img_mask
 
 def convert_dataset(MODE="train", file_identifier="VI_", task_name="nii"):
+
+    home = "U:\\"
+
+    if MODE == "train": name = 'Tr'
+    else: name = 'Ts'
 
     train_images = sorted(
         glob.glob(
             os.path.join(
-                "/mnt/chansey", "lauraalvarez", "data", "vascular_injuries", "mha", MODE, "data", "*.mha"
+                home, "lauraalvarez", "data", "vascular_injuries", "mha", f"images{name}", "*.mha"
             )
         )
     )
 
+
     BASE_PATH = os.path.join(
-        "/mnt/chansey",
+        home,
         "lauraalvarez",
         "data",
         "vascular_injuries",
@@ -177,15 +189,23 @@ def convert_dataset(MODE="train", file_identifier="VI_", task_name="nii"):
         print("Converting {} into {}".format(patient_id, save_filename))
         try:
             if not os.path.exists(os.path.join(train_image_dir, save_filename)):
+                # read the original image
                 img = sitk.ReadImage(train_images[i])
-                img = sitk.DICOMOrient(img, "RAS")
+                # Get the array from the image and recreate it without any extra metadata
+                img_array = sitk.GetArrayFromImage(img)
+                new_img = sitk.GetImageFromArray(img_array)
+                # Add the metadata we want to keep
+                new_img.SetSpacing(img.GetSpacing())
+                new_img.SetOrigin(img.GetOrigin())
+                new_img.SetDirection(img.GetDirection())
+                # Orient the image to RAS
+                img = sitk.DICOMOrient(new_img, "RAS")
                 print("Saving to  {}".format(os.path.join(train_image_dir, save_filename)))
                 sitk.WriteImage(img, os.path.join(train_image_dir, save_filename))
 
-            img = sitk.ReadImage(os.path.join(train_image_dir, save_filename))
             filename = os.path.basename(train_images[i])
-            labelpath = os.path.join("/mnt/chansey","lauraalvarez","data", "vascular_injuries", "mha", MODE, "mask", filename)
-            print(f"Converting mask for {labelpath}")
+            labelpath = os.path.join(home,"lauraalvarez","data", "vascular_injuries", "mha", f"labels{name}", filename)
+            print(f"\nConverting mask for {labelpath}")
 
             if not os.path.exists(os.path.join(train_label_dir, save_filename)):
                 try:
@@ -194,13 +214,12 @@ def convert_dataset(MODE="train", file_identifier="VI_", task_name="nii"):
                     print(e)
                     print("Error reading {}".format(labelpath))
                     continue
+                img = sitk.ReadImage(os.path.join(train_image_dir, save_filename))
                 # Adapt the channel
-                img_array, vi_classes = one_channel_overlay(img_mask)
+                img_array = one_channel_overlay(img_mask)
                 # Transform the label to the same size as the image
-                if len(vi_classes) == 0:
-                    no_vascular_injuries.append(patient_id)
-
-                img_array = adapt_overlay(labelpath, train_images[i], img_array)
+                img_array = channel_first(img_array, img)
+                img_array = adapt_overlay(labelpath, img, img_array)
                 img_array = sitk.GetImageFromArray(img_array)
 
                 print("Saving to  {}".format(os.path.join(train_label_dir, save_filename)))
@@ -236,8 +255,7 @@ def convert_dataset(MODE="train", file_identifier="VI_", task_name="nii"):
 
 
 def main():
-    task_name = "Task504_LiverTrauma" 
-    MODES = ["train", "test"]
+    MODES = ["train"]
     for mode in MODES: convert_dataset(MODE=mode, file_identifier="VI_", task_name="nii")
 
 if __name__ == "__main__":

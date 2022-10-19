@@ -310,3 +310,11 @@ cython_debug/
 #!/wandb/*/files/media/images/
 
 /lightning_logs/
+
+/Logs/
+
+/synthetic_data/
+
+._*
+
+.DS_Store

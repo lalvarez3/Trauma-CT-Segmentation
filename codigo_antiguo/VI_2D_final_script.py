@@ -31,7 +31,9 @@ from monai.transforms import (
     KeepLargestConnectedComponent,
     RandCropByPosNegLabeld,
     RandCropByLabelClassesd,
-    RandSpatialCropd
+    RandSpatialCropd,
+    SpatialPadd,
+    Rand3DElasticd
 )
 
 import wandb
@@ -182,7 +184,7 @@ N_WORKERS_LOADER = 0
 N_WORKERS_CACHE = 0
 CACHE_RATE = 0
 SEED = 42
-BS = 16
+BS = 32
 
 # %% [markdown]
 # #### Define the LightningModule
@@ -250,12 +252,12 @@ class Net(pytorch_lightning.LightningModule):
             for image_name, label_name in zip(test_images, test_labels)
         ]
 
+        train_files, val_files = data_dicts[:-83], data_dicts[-83:]
         random.shuffle(data_dicts)
-        train_files, val_files = data_dicts[:1000], data_dicts_test[:10]
-        # print("validation files", val_files)
+
+        print("validation files", val_files)
         # print("training files", train_files)
         print("len(train_files)", len(train_files))
-        print("train labels 0 y 1",train_files[0], train_files[1])
         print("len(validation files)", len(val_files))
 
         # set deterministic training for reproducibility
@@ -276,8 +278,12 @@ class Net(pytorch_lightning.LightningModule):
                 KeepOnlyClass(keys=["label"], class_to_keep=255),
                 ToGrayScale(keys=["image"], normalize=True),
                 EnsureChannelFirstd(keys=["image", "label"]),
-                Resized(keys=["image", "label"], spatial_size=(256,256)),
-                # RandSpatialCropd(keys=["image", "label"], roi_size=self.train_img_size,random_size=True),
+                SpatialPadd(keys=["image", "label"], spatial_size=(96, 96)),
+                RandCropByLabelClassesd(keys=["image", "label"],num_classes=2, label_key="label", spatial_size=(96, 96), num_samples=4),
+
+                Rand3DElasticd(keys=['image', 'label'], mode=('bilinear', 'nearest'), prob=0.1,
+                           sigma_range=(5, 8), magnitude_range=(100, 200), scale_range=(0.15, 0.15, 0.15),
+                           padding_mode="zeros"),# RandSpatialCropd(keys=["image", "label"], roi_size=self.train_img_size,random_size=True),
                 RandFlipd(
                     keys=["image", "label"],
                     spatial_axis=[0],
@@ -318,37 +324,27 @@ class Net(pytorch_lightning.LightningModule):
         self.train_ds = Dataset(
             data=train_files,
             transform=train_transforms,
-        #     cache_dir=os.path.join(
-        #             "/mnt/chansey/", "lauraalvarez", "data", "vascular_injuries", "png", "cache"
-        #         )
         )
 
         self.val_ds = Dataset(
             data=val_files,
             transform=val_transforms,
-            # cache_dir=os.path.join(
-            #         "/mnt/chansey/", "lauraalvarez", "data", "vascular_injuries", "png", "cache"
-            #     )
         )
 
-    # def configure_optimizers(self):
-    #     optimizer = torch.optim.AdamW(self._model.parameters(), 1e-3)
-    #     if PRETRAINED:
-    #         optimizer = torch.optim.AdamW(self.params, lr=5e-4, weight_decay=1e-5)
-    #     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', verbose=True, factor=0.05, patience=100, min_lr=1e-7)
-    #     return {'optimizer':optimizer, 'lr_scheduler':scheduler, 'monitor':"val_loss", "interval": "epoch"}
-
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self._model.parameters(), 1e-3)
+        optimizer = torch.optim.SGD(
+                self._model.parameters(), lr=0.1, momentum=0.99, nesterov=True, weight_decay=3e-05
+            )
         scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,
             lr_lambda=lambda epoch: (1 - self.current_epoch / 1000) ** 0.9,
+            last_epoch= self.current_epoch -1,
+            verbose=True,
         )
         return {
             "optimizer": optimizer,
             "lr_scheduler": scheduler,
             "monitor": "val_loss",
-            "interval": "epoch",
         }
 
     def train_dataloader(self):
@@ -375,39 +371,27 @@ class Net(pytorch_lightning.LightningModule):
 
     def training_step(self, batch, batch_idx):
         images, labels = batch["image"], batch["label"]
-        # lnp.lnp(images.shape)
-        # output = self.forward(images)
-        roi_size = (96, 96)
-        sw_batch_size = 4
-        output = sliding_window_inference(
-            images, roi_size, sw_batch_size, self.forward
-        )
+        output = self.forward(images)
         outputs = [self.post_pred(i) for i in decollate_batch(output)]
-
-        labels_1 = [
-            self.post_label(i) for i in decollate_batch(labels)
-        ]
-
+        labels_1 = [self.post_label(i) for i in decollate_batch(labels) ]
         self.train_dice_metric(y_pred=outputs, y=labels_1)
-
         loss = self.loss_function(output, labels)
+        if loss > 50:
+            print("loss is too high", loss)
         tensorboard_logs = {"train_loss": loss.item()}
         return {"loss": loss, "log": tensorboard_logs}
 
     def training_epoch_end(self, outputs):
         #  the function is called after every epoch is completed
-
         dice_injure = self.train_dice_metric.aggregate()
         dice_injure = dice_injure[0]
         self.train_dice_metric.reset()
         # calculating average loss
         avg_loss = torch.stack([x["loss"] for x in outputs]).mean()
-
         # logging using tensorboard logger
         self.log("dice loss", avg_loss)
         # self.log("train liver dice", dice_liver)
         self.log("train injure dice", dice_injure)
-
         self.logger.experiment.log({"dice loss": avg_loss})
 
     def validation_step(self, batch, batch_idx):
@@ -433,43 +417,12 @@ class Net(pytorch_lightning.LightningModule):
 
     def validation_epoch_end(self, outputs):
 
-        val_loss, num_items = 0, 0
         mean_val_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
-        # for output in outputs:
-        #     val_loss += output["val_loss"].sum().item()
-        #     num_items += output["val_number"]
-        # mean_val_loss = torch.tensor(val_loss / num_items)
-
-        post_pred_dice = Compose([EnsureType(), AsDiscrete(argmax=True, to_onehot=2), KeepLargestConnectedComponent([1], is_onehot=True, independent=False)])
-        post_label = Compose([EnsureType(), AsDiscrete(to_onehot=2)])
         dice_injure = self.dice_metric.aggregate()
         dice_injure = dice_injure[0]
         lnp.lnp(dice_injure)
 
         self.dice_metric.reset()
-        tensorboard_logs = {
-            "dice_metric": dice_injure,
-        }
-        predictions = [x["prediction"] for x in outputs]
-
-        if self.current_epoch % 25 == 0 or dice_injure - self.best_val_dice > 0.1 or self.current_epoch == self.trainer.max_epochs - 1:
-            # test_dt = wandb.Table(columns = ['epoch', 'filename', 'combined output','dice_value_liver', 'dice_value_injure', 'ground_truth', 'class predicted'])
-            # figure = computeROC(predictions)
-            # self.logger.experiment.log({"ROC": figure, "epoch": self.current_epoch})
-
-            for i, prediction in enumerate(predictions):
-                # filename = os.path.basename(prediction["filename"][0])
-                output_one = [post_pred_dice(i) for i in decollate_batch(prediction["output"])]
-                label_one = [post_label(i) for i in decollate_batch(prediction["label"])]
-                self.dice_metric(y_pred=output_one, y=label_one)
-                dice_value_injure = self.dice_metric.aggregate()
-                self.dice_metric.reset()
-                # class_predicted, _, ground_truth = get_classification_info(prediction)
-                # blended = make_gif(prediction, filename=i)
-                # row = [self.current_epoch, filename, wandb.Image(blended), dice_value_liver, dice_value_injure, int(ground_truth[0]), class_predicted]
-                # test_dt.add_data(*row)
-
-            # self.logger.experiment.log({f"SUMMARY_EPOCH_{self.current_epoch}" : test_dt})
 
         if dice_injure > self.best_val_dice:
             self.best_val_dice = dice_injure.item()
@@ -484,7 +437,7 @@ class Net(pytorch_lightning.LightningModule):
         # self.log("dice_metric_liver", dice_liver.item(), prog_bar=True)
         self.log("dice_metric_injure", dice_injure.item(), prog_bar=True)
         self.log("val_loss", mean_val_loss, prog_bar=True)
-        return {"log": tensorboard_logs}
+        return
 
     def predict_step(self, batch, batch_idx):
         print('predicting...')
@@ -521,7 +474,7 @@ def make_gif(prediction, filename):
             os.mkdir("gifs")
         imageio.mimsave(path_to_gif, volume)
         return path_to_gif
-    post_pred_blending = Compose([EnsureType(), AsDiscrete(argmax=False),KeepLargestConnectedComponent([1,2], is_onehot=False, independent=False)])
+    post_pred_blending = Compose([EnsureType(), AsDiscrete(argmax=False),KeepLargestConnectedComponent([1], is_onehot=False, independent=False)])
     prediction["output"] = [post_pred_blending(i) for i in decollate_batch(prediction["output"])]
     selected = {"output": prediction["output"][0], "image": prediction["image"][0], "label": prediction["label"][0]}
 
@@ -610,11 +563,11 @@ def computeROC(predictions):
 # ### Variables
 
 # %%
-SEED = 0
+SEED = 10
 IMG_SIZE = (96,96,96)
 VAL_SIZE = (256,256,256)
-SAVE_PATH = "lightning_logs/"
-run_idx = len(os.listdir("wandb"))
+SAVE_PATH = "U:\\lauraalvarez\\traumaAI\\Liver_Segmentation\lightning_logs"
+run_idx = len(os.listdir("U:\\lauraalvarez\\traumaAI\\Liver_Segmentation\wandb"))
 RUN_NAME = f"Predict_Segmentation_VI_{run_idx+1}"
 pytorch_lightning.seed_everything(SEED)
 
@@ -737,15 +690,12 @@ wandb_logger.watch(net)
 # set up loggers and checkpoints
 log_dir = os.path.join(root_dir, "logs")
 
-from pytorch_lightning.profiler import AdvancedProfiler
-
-profiler = AdvancedProfiler(dirpath="U:\\lauraalvarez\\traumaAI\\Liver_Segmentation\\profiler_logs", filename="output.txt")
 
 # initialise Lightning's trainer.
 trainer = pytorch_lightning.Trainer(
-    default_root_dir="lightning_logs/checkpoints",
+    default_root_dir="U:\\lauraalvarez\\traumaAI\\lightning_logs\\checkpoints",
     gpus=[0],
-    max_epochs=1,
+    max_epochs=1000,
     # fast_dev_run=True,
     auto_lr_find=False,
     logger=wandb_logger,
@@ -753,7 +703,7 @@ trainer = pytorch_lightning.Trainer(
     num_sanity_val_steps=0,
     log_every_n_steps=1,
     callbacks=l_callbacks,
-    profiler=profiler
+    gradient_clip_val=4
 )
 
 # train
