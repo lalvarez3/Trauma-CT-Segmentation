@@ -14,6 +14,15 @@ from tqdm import tqdm
 def copy_and_rename(
     old_location, old_file_name, new_location, new_filename, delete_original=False
 ):
+    """Copy and rename files
+
+    Args:
+        old_location (str): Location of the file to be copied
+        old_file_name (str): Name of the file to be copied
+        new_location (str): Location where the file will be copied
+        new_filename (str): name of the new file
+        delete_original (bool, optional): True if the original file should be removed. Defaults to False.
+    """    
 
     shutil.copy(os.path.join(old_location, old_file_name), new_location)
     os.rename(
@@ -46,6 +55,16 @@ def make_if_dont_exist(folder_path, overwrite=False):
 
 
 def adapt_overlay(overlay_path, mha_data, label):
+    """Function to make sure that the overlay has the same shape as the original MHA
+
+    Args:
+        overlay_path (str): Path to the overlay
+        mha_data (Array): Array of the original MHA
+        label (str): Label to be applied to the overlay
+
+    Returns:
+        Array: New Image Array with the right overalay matching the original MHA
+    """
     # Load the mha
     mha_org = mha_data.GetOrigin()[-1]
     # Load the mha image
@@ -86,6 +105,14 @@ def adapt_overlay(overlay_path, mha_data, label):
 
 
 def one_channel_overlay(img, organ):
+    """Generate a One channel overlay
+
+    Args:
+        img (Array): Array of the original MHA overlay
+
+    Returns:
+        Array: Array of the overlay with one channel
+    """
     mha_img = sitk.GetArrayFromImage(img)
     mha_img = mha_img.astype(np.int8)
 
@@ -141,6 +168,12 @@ def one_channel_overlay(img, organ):
 
 
 def save_csv(output_path, data):
+    """Save the data to a csv file to see which ID´s has been updated
+
+    Args:
+        output_path (str): Path to the output folder
+        data (Array): Data to be saved
+    """
     import csv
 
     keys = data[0].keys()
@@ -152,6 +185,15 @@ def save_csv(output_path, data):
 
 
 def channel_first(img_mask, img):
+    """Convert the Overlay to channel first
+
+    Args:
+        img_mask (Array): Overlay Array
+        img (Array): Original MHA Array
+
+    Returns:
+        Array: Overlay matching channel first as MHA
+    """
     img = sitk.GetArrayFromImage(img)
     if img.shape[0] != img_mask.shape[0]:
         if img.shape[0] == img_mask.shape[-1] and img.shape[-1] == img_mask.shape[0]:
@@ -160,7 +202,14 @@ def channel_first(img_mask, img):
 
 
 def convert_dataset(MODE, file_identifier="TRM", organ="vascular_injuries", task_name="Task505_SpleenTrauma"):
+    """Convert the MHA dataset folder into Nifti format ready to be used with nnUnet
 
+    Args:
+        MODE (str): Path to the output folder
+        file_identifier (str): Prefix to save the converted images correctly
+        task_name (str): Name of the task to be used in the nnUnet and as a folder
+    """
+    
     if MODE == "train": name = 'Tr'
     else: name = 'Ts'
     home = "/mnt/chansey/"
