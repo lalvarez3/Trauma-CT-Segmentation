@@ -1,3 +1,7 @@
+"""
+    Create csv file where each row is an scan and the columns contain each injury present on the ground truth and its size (in pixels).
+"""
+
 import csv
 import glob
 import SimpleITK as sitk
@@ -9,12 +13,18 @@ import skimage.measure as measure
 from scipy import ndimage
 
 
-# change here for different task name
-
-
 def copy_and_rename(
     old_location, old_file_name, new_location, new_filename, delete_original=False
 ):
+    """Copy and rename files
+
+    Args:
+        old_location (str): Location of the file to be copied
+        old_file_name (str): Name of the file to be copied
+        new_location (str): Location where the file will be copied
+        new_filename (str): name of the new file
+        delete_original (bool, optional): True if the original file should be removed. Defaults to False.
+    """   
 
     shutil.copy(os.path.join(old_location, old_file_name), new_location)
     os.rename(
@@ -47,13 +57,19 @@ def make_if_dont_exist(folder_path, overwrite=False):
 
 
 def get_connected_components_size(init_label, selected_label):
-    result = {}
-    init_label_ = init_label.copy()
-    foreground = np.where((init_label_ != selected_label), 0, init_label_)
+    """
+    Get the size of the connected components of a label
+    input:
+    init_label: label array to be processed
+    selected_label: label class to extract the connected components from
+    """
+    result = {} # dictionary to store the size of each connected component
+    init_label_ = init_label.copy() # copy the label array
+    foreground = np.where((init_label_ != selected_label), 0, init_label_) # remove anything that is not the selected label
     labelling, label_count = measure.label(
-        foreground == selected_label, return_num=True
-    )
-    init_clusters = np.unique(labelling, return_counts=True)
+        foreground == selected_label, return_num=True # get the connected components
+    ) 
+    # calculate and save the size of each connected component into result
     for n in range(1, label_count + 1):
         cluster_size = ndimage.sum(labelling == n)
         result[n] = cluster_size
@@ -62,21 +78,26 @@ def get_connected_components_size(init_label, selected_label):
 
 
 def save_csv(output_path, data, keys=None):
-    import csv
+    """Save the data to a csv file
 
+    Args:
+        output_path (str): Path to the output folder
+        data (Array): Data to be saved
+    """
     keys = data[0].keys() if keys is None else keys
     with open(output_path, "w") as output_file:
         dict_writer = csv.DictWriter(output_file, keys)
         dict_writer.writeheader()
         dict_writer.writerows(data)
-    a_file = open(output_path, "w")
-    dict_writer = csv.DictWriter(a_file, keys)
-    dict_writer.writeheader()
-    dict_writer.writerows(data)
-    a_file.close()
 
 
 def measure_dataset(MODE, task_name="Task505_SpleenTrauma"):
+    """Calculates injury sizes for one dataset/task
+
+    Args:
+        MODE (str): Mode of the dataset (train, val, test)
+        task_name (str, optional): Name of the task. Defaults to "Task505_SpleenTrauma".
+    """
 
     if MODE == "train":
         name = "Tr"
@@ -84,6 +105,7 @@ def measure_dataset(MODE, task_name="Task505_SpleenTrauma"):
         name = "Ts"
 
     home = "U:\\"
+    # path to the dataset
     train_images = sorted(
         glob.glob(
             os.path.join(
@@ -107,10 +129,8 @@ def measure_dataset(MODE, task_name="Task505_SpleenTrauma"):
 
     task_folder_name = os.path.join(BASE_PATH, task_name)
 
-    equivalence_l = list()
-
-    # load the csv file with the data
-    total_keys = set()
+    injury_sizes = list() # list to store the data
+    total_keys = set() # set to store the number of injuries 
 
     for i in tqdm(range(0, len(train_images))):
 
@@ -126,7 +146,7 @@ def measure_dataset(MODE, task_name="Task505_SpleenTrauma"):
             sizes["name"] = os.path.basename(train_images[i])
             keys = sizes.keys()
             total_keys.update(keys)
-            equivalence_l.append(sizes)
+            injury_sizes.append(sizes)
 
         # Save the csv file for each iteration in case of error
         except Exception as e:
@@ -134,16 +154,17 @@ def measure_dataset(MODE, task_name="Task505_SpleenTrauma"):
             print("Error reading {}".format(train_images[i]))
             continue
 
+    # Save the csv file
     save_csv(
-        os.path.join(task_folder_name, f"Injury_measures{MODE}.csv"), equivalence_l, total_keys
+        os.path.join(task_folder_name, f"Injury_measures{MODE}.csv"), injury_sizes, total_keys
     )
 
     print(f"Finished measuring {MODE} to NII")
 
 
 def main():
-    task_name = "Task511_SpleenTraumaCV"
-    MODES = ["train", "test"]
+    task_name = "Task511_SpleenTraumaCV" # name of the task
+    MODES = ["train", "test"] # modes to be measured
     for MODE in MODES:
         measure_dataset(MODE, task_name)
 

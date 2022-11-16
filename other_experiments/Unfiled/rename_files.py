@@ -3,7 +3,7 @@ import os
 from imageio import save
 from tqdm import tqdm
 
-from convert_2_nii import main
+from other_experiments.Unfiled.convert_2_nii_liver_spleen import main
 
 
 def save_csv(output_path, data):

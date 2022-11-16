@@ -1,265 +1,219 @@
-class InterpolateMode(Enum):
-    NEAREST = "nearest"
-    LINEAR = "linear"
-    BILINEAR = "bilinear"
-    BICUBIC = "bicubic"
-    TRILINEAR = "trilinear"
-    AREA = "area"
+""" Utilities for the project. Includes postprocessing functions and other for save_gifs.py and run_metrics.py"""
+
+import glob
+import imageio
+import csv
+import os
+from collections import Counter, OrderedDict
+from typing import (Any, Dict, Hashable, List, Mapping, Optional, Sequence,
+                    Tuple, Union)
+
+import numpy as np
+import SimpleITK as sitk
+import skimage.measure as measure
+import torch
+from batchgenerators.utilities.file_and_folder_operations import join, subfiles
+from monai.config import DtypeLike, KeysCollection
+from monai.config.type_definitions import NdarrayOrTensor
+from monai.data import MetaTensor
+from monai.transforms import (AddChanneld, AsChannelFirstd, Compose,
+                              CropForegroundd, KeepLargestConnectedComponentd,
+                              LoadImaged)
+from monai.transforms.transform import MapTransform, Transform
+from monai.utils import TransformBackends
+from monai.utils.type_conversion import convert_to_dst_type
+from nnunet.evaluation.evaluator import Evaluator, aggregate_scores
+from scipy import ndimage
+from skimage.morphology import (ball, binary_dilation, closing, cube, dilation,
+                                disk)
+from skimage.segmentation import (expand_labels, inverse_gaussian_gradient,
+                                  morphological_geodesic_active_contour)
 
 
-InterpolateModeSequence = Union[
-    Sequence[Union[InterpolateMode, str]], InterpolateMode, str
-]
+class injury_postprocessing(MapTransform):
+    
+    """ 
+    Postprocessing of injuries for the predicted segmentation.
 
-class ResizedC(MapTransform, InvertibleTransform):
-
-    backend = Resize.backend
+    """
 
     def __init__(
         self,
         keys: KeysCollection,
-        spatial_size: Union[Sequence[int], int],
-        size_mode: str = "all",
-        mode: InterpolateModeSequence = InterpolateMode.AREA,
-        align_corners: Union[Sequence[Optional[bool]], Optional[bool]] = None,
+        dtype: DtypeLike = np.float32,
         allow_missing_keys: bool = False,
+        settings: dict = {
+            "iterations": 2,
+            "smoothing": 2,
+            "balloon": 0,
+            "threshold": "auto",
+            "sigma": 2,
+            "alpha": 7000,
+        },
+        organ: str = "Liver",
     ) -> None:
         super().__init__(keys, allow_missing_keys)
-        self.mode = ensure_tuple_rep(mode, len(self.keys))
-        self.align_corners = ensure_tuple_rep(align_corners, len(self.keys))
-        self.resizer = Resize(spatial_size=spatial_size, size_mode=size_mode)
-        self.spatial_size = spatial_size
+        self.settings = settings
+        self.organ = organ
+
+    def get_connected_components(self, init_label, selected_label, min_size=4000):
+        """
+        Get the connected components of the selected label and remove the components that are smaller than the min_size.
+
+        Args:
+            init_label (np.ndarray): The initial label.
+            selected_label (int): The selected label to extract the components.
+            min_size (int): The minimum size of the connected components.
+        """
+        result = {} # Dictionary to store the connected components
+        removed = {} # Dictionary to store the removed connected components
+        init_label_ = init_label.copy() # Copy the initial label
+        foreground = np.where((init_label_ != selected_label), 0, init_label_) # Get the foreground (selected label)
+        labelling, label_count = measure.label( # Get the connected components
+            foreground == selected_label, return_num=True
+        )
+        init_clusters = np.unique(labelling, return_counts=True) # Get the connected components and their sizes
+        counter = 0
+        for n in range(1, label_count + 1): # Loop over the connected components
+            cluster_size = ndimage.sum(labelling == n) # Get the size of the connected component
+            if cluster_size < min_size: # If the size is smaller than the min_size
+                labelling[labelling == n] = 0 # Remove the connected component
+                removed[n] = cluster_size
+                counter += 1
+            else: # If the size is larger than the min_size
+                result[n] = cluster_size # Store the connected component
+        for n in range(1, label_count + 1): # Loop over the connected components
+            if n in result.keys(): # If the connected component is not removed
+                labelling[labelling == n] = selected_label # Set the connected component to the selected label
+        if counter == label_count: # If all the connected components are removed
+            labelling = init_label # Set the initial label
+
+        return labelling, init_clusters, result, removed
 
     def __call__(
         self, data: Mapping[Hashable, NdarrayOrTensor]
     ) -> Dict[Hashable, NdarrayOrTensor]:
         d = dict(data)
-        for key, mode, align_corners in self.key_iterator(
-            d, self.mode, self.align_corners
-        ):
-            self.push_transform(
-                d,
-                key,
-                extra_info={
-                    "mode": mode.value if isinstance(mode, Enum) else mode,
-                    "align_corners": align_corners
-                    if align_corners is not None
-                    else TraceKeys.NONE,
-                },
-            )
-            init_slice = int(d[key].shape[-1]*0.15)
-            end_slice = int(d[key].shape[-1]*0.1)
-            # Reduce Size in Memory
-            if key == "label":
-                d[key] = d[key].astype(np.int8)
-                if d[key].shape[-1] > 600: d[key] = d[key][:,:,:,init_slice:-end_slice] #
 
-                if d["image_meta_dict"].get("PatientName", None) and d["image_meta_dict"]["PatientName"].startswith("NI") and len(d[key].shape) != 4:
-                    # print(d[key].shape)
-                    liver_channel = np.where((d[key] != 6), 0, d[key])
-                    liver_channel = np.where((liver_channel == 6), 1, liver_channel)
-                    # liver_channel = np.expand_dims(liver_channel, 0)
-                    w, h, z = self.spatial_size
-                    liver_channel = self.resizer(liver_channel, align_corners=align_corners)
-                    background = np.ones((1, z, w, h), dtype=np.float16) - liver_channel
-                    empty_injures = np.zeros((1, z, w, h), dtype=np.float16)
-                    resized = [background, liver_channel, empty_injures]
-                    d[key] = np.stack(resized).astype(np.int8).squeeze()
+        if self.organ == "Liver":
+            fixed_settings = {
+                "min_injury_size": 7000, # Minimum size of the injury
+                "small_injury_size": 25000, # Maximum size of the small injury (for morphological operations)
+                "cube_size": 2, # Size of the cube for the dilation
+                "expanding_size": 2, # Size of the expanding for the dilation
+            }
+        elif self.organ == "Spleen":
+            fixed_settings = {
+                "min_injury_size": 500, # Minimum size of the injury
+                "small_injury_size": 5000, # Maximum size of the small injury (for morphological operations)
+                "cube_size": 8, # Size of the cube for the dilation
+                "expanding_size": 3,  # Size of the expanding for the dilation
+            }
+        else:
+            print("Select correct organ, options: Liver, Spleen")
 
-                else:
-                    label = d[key]
-                    w, h, z = self.spatial_size
-                    resized = list()
-                    background = np.ones((1, w, h, z), dtype=np.int8)
-                    for i, channel in enumerate([0, 2]):  # TODO: desharcodead
-                        resized.append(
-                            self.resizer(
-                                np.expand_dims(label[channel, :, :, :], 0),
-                                align_corners=align_corners,
-                            )
-                        )
+        original_label = d["label"].squeeze() # Get the original label
+        old_old_mask_organ = np.where((original_label != 1), 0, original_label) # Get the organ
+        cropped_injury = CropForegroundd(keys=["image", "label"], source_key="label")(d) # Crop the injury
+        init_label = cropped_injury[
+            "label"
+        ].squeeze() 
+        old_old_mask_injury = np.where(
+            (init_label != 2), 0, init_label
+        )  # save only the injury
+        old_mask_injury, init_clusters, result, removed = self.get_connected_components( # Get the connected components of the injury
+            init_label=old_old_mask_injury.astype(np.int8),
+            selected_label=2,
+            min_size=fixed_settings["min_injury_size"],
+        ) 
+        scanner = cropped_injury[
+            "image"
+        ].squeeze()
+        gimage = inverse_gaussian_gradient(
+            scanner, sigma=self.settings["sigma"], alpha=self.settings["alpha"]
+        )  # Get the inverse gaussian gradient
 
-                    background -= resized[0] # + resized[1]
-                    resized = [background] + resized
-                    d[key] = np.stack(resized).astype(np.int8).squeeze()
-            else:
-                if d[key].shape[-1] > 600: d[key] = d[key][:,:,:,init_slice:-end_slice]
-                d[key] = self.resizer(d[key], align_corners=align_corners)
+        ls = old_mask_injury 
+        injury_size = np.sum(old_mask_injury) / 2 # Get the size of the injury
+        size = 0
 
-        keys = ['spacing', 'original_affine', 'affine', 'spatial_shape', 'original_channel_dim', 'filename_or_obj']
-        new_label_metadata = dict()
-        for key in keys:
-            new_label_metadata[key] = d["label_meta_dict"].get(key, 0)
+        if injury_size < fixed_settings["small_injury_size"]:  # If the size of the injury is smaller than the small_injury_size
+            dilation_bool = True # Set the dilation_bool to True
+            footprint = cube(fixed_settings["cube_size"]) # Set the footprint for the dilation
+            size = fixed_settings["expanding_size"]  # Set the expanding size for the dilation
+        else: # If the size of the injury is larger than the small_injury_size
+            dilation_bool = True # Set the dilation_bool to True
+            footprint = ball(1)  # Set the footprint for the dilation
+            size = 1 # Set the expanding size for the dilation
 
-        d["label_meta_dict"] = new_label_metadata
+        if size != 0: # If the expanding size is not 0
+            ls = expand_labels(ls, size)  # Expand the injury
+        ls = closing(ls) # Close the injury
+        ls = morphological_geodesic_active_contour( # Get the active contour
+            gimage, 
+            num_iter=self.settings["iterations"],
+            init_level_set=ls,
+            smoothing=self.settings["smoothing"],
+            balloon=self.settings["balloon"],
+            threshold=self.settings["threshold"],
+        )  
+        if dilation_bool: # If the dilation_bool is True
+            ls = dilation(ls, footprint) # Dilate the active contour
 
-        if "PatientID" not in d["image_meta_dict"]:
-            d["image_meta_dict"]["PatientID"] = "0"
-        if "PatientName" not in d["image_meta_dict"]:
-            d["image_meta_dict"]["PatientName"] = "0"
-        if "SliceThickness" not in d["image_meta_dict"]:
-            d["image_meta_dict"]["SliceThickness"] = "0"
-        return d
-
-    def inverse(
-        self, data: Mapping[Hashable, NdarrayOrTensor]
-    ) -> Dict[Hashable, NdarrayOrTensor]:
-        d = deepcopy(dict(data))
-        for key in self.key_iterator(d):
-            transform = self.get_most_recent_transform(d, key)
-            orig_size = transform[TraceKeys.ORIG_SIZE]
-            mode = transform[TraceKeys.EXTRA_INFO]["mode"]
-            align_corners = transform[TraceKeys.EXTRA_INFO]["align_corners"]
-            # Create inverse transform
-            inverse_transform = Resize(
-                spatial_size=orig_size,
-                mode=mode,
-                align_corners=None
-                if align_corners == TraceKeys.NONE
-                else align_corners,
-            )
-            # Apply inverse transform
-            d[key] = inverse_transform(d[key])
-            # Remove the applied transform
-            self.pop_transform(d, key)
+        cropped_injury["label"] = MetaTensor( # Set the label to the cropped injury
+            torch.tensor(np.expand_dims(ls, 0)),
+            meta=cropped_injury["label"].meta,
+            applied_operations=cropped_injury["label"].applied_operations,
+        )
+        inv_cropped = CropForegroundd( # Inverse the cropping
+            keys=["image", "label"], source_key="label"
+        ).inverse(
+            cropped_injury
+        )
+        final_mask_injury = torch.where(((inv_cropped["label"][0]) == 1), 2, 0) # Get the final mask of the injury
+        final_mask = old_old_mask_organ + final_mask_injury # Get the final mask of the organ and the injury
+        final_mask = np.where((final_mask == 3), 2, final_mask) # Adjust the label numbers of the classes
+        d["label"] = np.expand_dims(final_mask, 0) # Set the label to the data
 
         return d
 
 
+def save_csv(output_path, task_name, data, out_folder, gif_folder):
 
-# %%
-class adaptOverlay(MapTransform, InvertibleTransform):
+    base_path = os.path.join(
+        "U:\\",
+        "lauraalvarez",
+        "nnunet",
+        "nnUNet_raw_data",
+        task_name,
+        out_folder,
+        gif_folder,
+        output_path)
 
-    backend = Resize.backend
-
-    def __init__(
-        self,
-        keys: KeysCollection,
-        size_mode: str = "all",
-        mode: InterpolateModeSequence = InterpolateMode.AREA,
-        align_corners: Union[Sequence[Optional[bool]], Optional[bool]] = None,
-        allow_missing_keys: bool = False,
-    ) -> None:
-        super().__init__(keys, allow_missing_keys)
-        self.mode = ensure_tuple_rep(mode, len(self.keys))
-        self.align_corners = ensure_tuple_rep(align_corners, len(self.keys))
-
-    def __adapt_overlay__(self, overlay_path, mha_path, label):
-        import SimpleITK as sitk
-        if label.shape[-1] == 6:
-            return label
-        # Load the mha
-        mha_data = sitk.ReadImage(mha_path)
-        mha_org = mha_data.GetOrigin()[-1]
-        # Load the mha image
-        mha_img = sitk.GetArrayFromImage(mha_data)
-        original_z_size = mha_img.shape[0]
-
-        # Load the overlay
-        overlay_data = sitk.ReadImage(overlay_path)
-        overlay_org = overlay_data.GetOrigin()[-1]
-
-        overlay_init = np.abs(1/mha_data.GetSpacing()[-1]*(mha_org-overlay_org) )
-
-        lower_bound = int(overlay_init)
-        upper_bound = label.shape[-1]
-        zeros_up = lower_bound
-        zeros_down = original_z_size - (upper_bound + lower_bound)
-        new = list()
-
-        if zeros_up > 0:
-            new.append(np.zeros((label.shape[0], label.shape[1], zeros_up), dtype=label.dtype))
-
-        new.append(label)
-
-        if zeros_down > 0:
-            new.append(np.zeros((label.shape[0], label.shape[1], zeros_down), dtype=label.dtype))
-
-        label = np.concatenate(new, axis=2)
-
-        return label
+    keys = data[0].keys()
+    a_file = open(base_path, "w+")
+    dict_writer = csv.DictWriter(a_file, keys)
+    dict_writer.writeheader()
+    dict_writer.writerows(data)
+    a_file.close()
 
 
-    def __call__(
-        self, data: Mapping[Hashable, NdarrayOrTensor]
-    ) -> Dict[Hashable, NdarrayOrTensor]:
-        d = dict(data)
-        for key, mode, align_corners in self.key_iterator(
-            d, self.mode, self.align_corners
-        ):
-            self.push_transform(
-                d,
-                key,
-                extra_info={
-                    "mode": mode.value if isinstance(mode, Enum) else mode,
-                    "align_corners": align_corners
-                    if align_corners is not None
-                    else TraceKeys.NONE,
-                },
-            )
-            # Reduce Size in Memory
-            if key == "label":
-                d[key] = d[key].astype(np.int8)
-                if d["image_meta_dict"].get("PatientName", None) and d["image_meta_dict"]["PatientName"].startswith("NI"):
-                    file_path = d["label_meta_dict"]["filename_or_obj"]
-                    data_path = d["image_meta_dict"]["filename_or_obj"]
-                    d[key] = self.__adapt_overlay__(file_path, data_path, d[key])
-        return d
+def save_gif(volume, filename, task_name, out_folder, gif_folder):
+    volume = volume.astype(np.float64) / np.max(volume)  # normalize the data to 0 - 1
+    volume = volume * 255  # Now scale by 255
+    volume = volume.astype(np.uint8)
+    base_path = os.path.join(
+        "U:\\",
+        "lauraalvarez",
+        "nnunet",
+        "nnUNet_raw_data",
+        task_name,
+        out_folder,
+        gif_folder)
+    path_to_gif = os.path.join(base_path, f"{filename}.mp4")
+    if not os.path.exists(base_path):
+        print("Creating gifs directory")
+        os.mkdir(base_path)
+    imageio.mimsave(path_to_gif, volume, fps=5)
+    return path_to_gif
 
-    def inverse(
-        self, data: Mapping[Hashable, NdarrayOrTensor]
-    ) -> Dict[Hashable, NdarrayOrTensor]:
-        d = deepcopy(dict(data))
-        for key in self.key_iterator(d):
-            transform = self.get_most_recent_transform(d, key)
-            orig_size = transform[TraceKeys.ORIG_SIZE]
-            mode = transform[TraceKeys.EXTRA_INFO]["mode"]
-            align_corners = transform[TraceKeys.EXTRA_INFO]["align_corners"]
-            # Create inverse transform
-            inverse_transform = Resize(
-                spatial_size=orig_size,
-                mode=mode,
-                align_corners=None
-                if align_corners == TraceKeys.NONE
-                else align_corners,
-            )
-            # Apply inverse transform
-            d[key] = inverse_transform(d[key])
-            # Remove the applied transform
-            self.pop_transform(d, key)
-
-        return d
-        
-class KeepOnlyClass(MapTransform, InvertibleTransform):
-
-    def __init__(
-        self,
-        keys: KeysCollection,
-        class_to_keep: int,
-        allow_missing_keys: bool = False,
-    ) -> None:
-        super().__init__(keys, allow_missing_keys)
-        self.class_to_keep = class_to_keep
-
-    def __call__(self, data: Mapping[Hashable, NdarrayOrTensor]) -> Dict[Hashable, NdarrayOrTensor]:
-        d = dict(data)
-        for key in self.key_iterator(d):
-            self.push_transform(d, key)
-            d[key] = np.where(d[key] == 255, 1, 0)
-            # values = d[key]
-            # print("NP UNIQUE", np.unique(values))
-            # print('BEFORE EYE', d[key].shape)
-            # n_values = np.max(values) + 1
-            # d[key]= np.eye(n_values)[values]
-            # print('AFTER EYE', d[key].shape)
-            # d[key] = np.squeeze(d[key])
-            # print('AFTER squeeze', d[key].shape)
-            # print("NP UNIQUE AFTER", np.unique(d[key]))
-            # if d[key].ndim == 2:
-            #     zeros = np.zeros(d[key].shape)
-            #     d[key] = np.stack([d[key], zeros], axis=-1)
-            #     print(d[key].shape)
-            # print("NP UNIQUE AFTER AFTER 0", np.unique(d[key][:,:,0]))
-            # print("NP UNIQUE AFTER AFTER 1", np.unique(d[key][:,:,1]))
-
-        return d

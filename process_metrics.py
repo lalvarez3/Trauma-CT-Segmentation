@@ -1,5 +1,5 @@
 """
-File to convert the JSON files to CSV for easier extraction of data.
+    Script to convert the JSON metrics files (from the nnunet) to CSV for easier extraction of data.
 """
 import csv
 import glob
@@ -23,22 +23,21 @@ def get_info(item, key):
     return result
 
 
-HOME = "U://"
-TASK = "Task510_LiverTraumaDGX"
+HOME = "U://" # path to the dataset
+TASK = "Task510_LiverTraumaDGX" # Task name
 
+# path to the metrics files
 paths_to_analyze = glob.glob(
     os.path.join(
         HOME, "lauraalvarez", "nnunet", "nnUNet_raw_data", TASK, "out_unet/*.json"
     )
 )
 
-paths_to_analyze = paths_to_analyze
-
 # Define the structure of the data
 csv_header = ["number", "accuracy", "precision", "recall", "dice", "jaccard"]
 
-for i, path in enumerate(paths_to_analyze):
 
+for i, path in enumerate(paths_to_analyze):
     # get filename
     filename = os.path.basename(path).split(".")[0] + ".csv"
     csv_path = os.path.join(
@@ -50,9 +49,8 @@ for i, path in enumerate(paths_to_analyze):
         data = json.load(f)
 
     with open(csv_path, "w") as file:
-        writer = csv.writer(file)
-        # 3. Write data to the file
-        writer.writerow(csv_header)
+        writer = csv.writer(file) # write data to the file
+        writer.writerow(csv_header) # write header
 
         for items in data["results"]["all"]:
             new_row = get_info(items, "1")

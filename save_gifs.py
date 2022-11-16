@@ -20,10 +20,10 @@ from monai.transforms import (
     KeepLargestConnectedComponentd,
     LabelToContour,
     FillHolesd,
-    Rand3DElasticd
+    Rand3DElasticd,
 )
 
-from skimage.metrics import (adapted_rand_error)
+from skimage.metrics import adapted_rand_error
 import glob
 from monai.transforms.transform import MapTransform
 from monai.transforms.inverse import InvertibleTransform
@@ -39,336 +39,47 @@ from monai.metrics import DiceMetric, MeanIoU
 from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score
 import csv
 import cv2
+
 # import cc3d
 # import morphsnakes as ms
 import cv2
 import imageio
 from collections import Counter
-from skimage.segmentation import (morphological_chan_vese,
-                                  morphological_geodesic_active_contour,
-                                  inverse_gaussian_gradient, expand_labels,)
+from skimage.segmentation import (
+    morphological_chan_vese,
+    morphological_geodesic_active_contour,
+    inverse_gaussian_gradient,
+    expand_labels,
+)
 from skimage.morphology import disk, dilation, binary_dilation, ball, cube, closing
 from scipy import ndimage
 from monai.data import MetaTensor
-import  skimage.measure as measure
+import skimage.measure as measure
 
-class RefineOutput(MapTransform):
-    def __init__(
-        self,
-        keys: KeysCollection,
-        dtype: DtypeLike = np.float32,
-        allow_missing_keys: bool = False,
-    ) -> None:
-        super().__init__(keys, allow_missing_keys)
+from utils import injury_postprocessing, save_gif, save_csv
 
-    def __call__(
-        self, data: Mapping[Hashable, NdarrayOrTensor]
-    ) -> Dict[Hashable, NdarrayOrTensor]:
-        d = dict(data)
-        old_mask_organ = np.where((d["label"] != 1), 0, d["label"])
-        kernel = np.ones((2, 2), np.uint8)
-        old_mask_organ =  np.expand_dims(np.stack([cv2.dilate(old_mask_organ[0,slice,:,:],kernel,iterations = 1) for slice in range(old_mask_organ.shape[1])]),0)
-        old_mask_injury = np.where((d["label"] != 2), 0, d["label"])
-        new_mask_injury = np.zeros_like(old_mask_injury)
-        new_img = d["image"][:, :, :, :].copy()
-        idx_label_organ = np.where(old_mask_organ.flatten() == 1)[0] #ids of spleen
-        min_intensity = np.min(new_img[old_mask_injury!=0])
-        idx_img = np.where((new_img.flatten() > min_intensity))[0]
-        idx_img_2 = np.where((new_img.flatten() < min_intensity +30))[0]
-        idx_img = np.intersect1d(idx_img, idx_img_2)
-        idx_to_change = np.intersect1d(idx_img, idx_label_organ)
-        np.put(new_mask_injury, idx_to_change, 1)
-        old_mask_injury += new_mask_injury
-        old_mask_injury = np.where((old_mask_injury == 3), 2, old_mask_injury)
-        old_mask_injury = np.where((old_mask_injury == 1), 2, old_mask_injury)
-
-        # closed_slices = list()
-        # for slice in range(new_mask.shape[-1]):
-        #     result = cv2.morphologyEx(
-        #         new_mask[0, :, :, slice], cv2.MORPH_CLOSE, kernel, iterations=2
-        #     )
-        #     result = cv2.medianBlur(result, 3)
-        #     closed_slices.append(result)
-
-        # new_mask = np.stack(closed_slices)
-
-        final_mask = old_mask_injury + old_mask_organ
-
-        d["label"] = final_mask
-
-
-        return d
-
-
-class DilationLabel(MapTransform):
-    def __init__(
-        self,
-        keys: KeysCollection,
-        dtype: DtypeLike = np.float32,
-        allow_missing_keys: bool = False,
-    ) -> None:
-        super().__init__(keys, allow_missing_keys)
-
-    def store_evolution_in(lst):
-        """Returns a callback function to store the evolution of the level sets in
-        the given list.
-        """
-        def _store(x):
-            lst.append(np.copy(x))
-        return _store
-
-    def __call__(
-        self, data: Mapping[Hashable, NdarrayOrTensor]
-    ) -> Dict[Hashable, NdarrayOrTensor]:
-        d = dict(data)
-        init_label = d["label"].squeeze() #antes img
-        old_mask_injury = np.where((init_label != 2), 0, init_label) # save only the injury
-        scanner = d["image"].squeeze()
-        old_mask_organ = np.where((init_label != 1), 0, init_label)
-        gimage = inverse_gaussian_gradient(scanner)
-        cropped_injury = CropForegroundd(keys=["image", "label"],
-                            source_key="label",
-                            margin=30)({"image": np.expand_dims(gimage,0), "label": np.expand_dims(old_mask_injury,0)})
-        # evolution = [] # callback = store_evolution_in(evolution)
-        # ls = morphological_geodesic_active_contour(cropped_injury["image"][0], num_iter=1, #1000 advised?
-        #                                         init_level_set=cropped_injury["label"][0],
-        #                                         smoothing=1, balloon=0,
-        #                                         threshold=0.2)
-        ls = morphological_chan_vese(cropped_injury["image"][0], num_iter=25, #1000 advised?
-                                                init_level_set=cropped_injury["label"][0])
-                                                # iter_callback=callback)
-        from monai.data import MetaTensor
-        cropped_injury["label"] = MetaTensor(torch.tensor(np.expand_dims(ls,0)), meta=cropped_injury["label"].meta, applied_operations = cropped_injury["label"].applied_operations )
-        inv_cropped = CropForegroundd(keys=["image", "label"], source_key="label",
-                                            margin=30).inverse(cropped_injury)
-        final_mask = old_mask_organ + inv_cropped["label"]
-        d["label"] =  final_mask
-        # if ORGAN == "Spleen":
-        #     injury_size = np.sum(old_mask_injury)/2
-        #     if injury_size < 4500:
-        #         # radius = int((injury_size/1000)*2)
-        #         old_mask_organ = np.where((img != 1), 0, img)
-        #         final_mask_injury = dilation(old_mask_injury[0,:,:,:], footprint=ball(radius=6))
-        #         final_mask_injury = np.expand_dims(final_mask_injury, 0).astype(np.int8)
-        #         final_mask = old_mask_organ + final_mask_injury
-        #         final_mask = np.where((final_mask == 3), 2, final_mask)
-        #         d["label"] = final_mask
-        #     else:
-        #         old_mask_organ = np.where((img != 1), 0, img)
-        #         final_mask_injury = dilation(old_mask_injury[0,:,:,:], footprint=ball(radius=2))
-        #         final_mask_injury = np.expand_dims(final_mask_injury, 0).astype(np.int8)
-        #         final_mask = old_mask_organ + final_mask_injury
-        #         final_mask = np.where((final_mask == 3), 2, final_mask)
-        #         d["label"] = final_mask
-        # if ORGAN == "Liver":
-        #     old_mask_organ = np.where((img != 1), 0, img)
-        #     mask = disk(2)
-        #     new_mask_injury = list()
-        #     for slice in range(old_mask_injury.shape[1]):
-        #         result = dilation(old_mask_injury[0,slice,:,:], footprint=mask)
-        #         new_mask_injury.append(result)
-        #     final_mask_injury = np.stack(new_mask_injury)
-        #     final_mask_injury = np.expand_dims(final_mask_injury, 0).astype(np.int8)
-        #     final_mask = old_mask_organ + final_mask_injury
-        #     final_mask = np.where((final_mask == 3), 2, final_mask)
-        #     d["label"] = final_mask
-
-        return d
-
-
-def fill_contours_fixed(arr):
-    slices = []
-    for _ in range(arr.shape[0]):
-        slices.append(
-        np.maximum.accumulate(arr, 1) &\
-            np.maximum.accumulate(arr[:, :, ::-1], 1)[:, :, ::-1] &\
-            np.maximum.accumulate(arr[:, ::-1, :], 0)[:,::-1, :] &\
-            np.maximum.accumulate(arr[::-1, :, :], 0)[::-1, :, :] &\
-            np.maximum.accumulate(arr, 0))
-    return np.stack(slices, 0)
-
-
-
-class ActiveContour(MapTransform):
-    def __init__(
-        self,
-        keys: KeysCollection,
-        dtype: DtypeLike = np.float32,
-        allow_missing_keys: bool = False,
-    ) -> None:
-        super().__init__(keys, allow_missing_keys)
-
-    def __call__(
-        self, data: Mapping[Hashable, NdarrayOrTensor]
-    ) -> Dict[Hashable, NdarrayOrTensor]:
-        d = dict(data)
-        label = d["label"][:,:,:,:]
-        img = d["image"][:,:,:,:]
-        old_mask_organ = np.where((label != 1), 0, label)
-        old_mask_injury = np.where((label != 2), 0, label)
-        # old_mask_injury = np.expand_dims(old_mask_injury,0)
-        temp_d = {"image": d["image"], "label": old_mask_injury}
-        cropped_contour = CropForegroundd(keys=["image", "label"],
-                                            source_key="label",
-                                            margin=10)(temp_d)
-        cropped_img = cropped_contour["image"][0,:,:,:]
-        cropped_label_injury = cropped_contour["label"][0,:,:,:]
-        # gimg = ms.inverse_gaussian_gradient(cropped_img, alpha=1000, sigma=5.48)
-        # contour_injury = LabelToContour()(cropped_label_injury)
-        # label_ac = ms.morphological_geodesic_active_contour(gimg, iterations=10,
-        #                                      init_level_set=cropped_label_injury,
-        #                                      smoothing=1, threshold=0.31,
-        #                                      balloon=1)
-        label_ac = ms.morphological_chan_vese(cropped_img, 25, init_level_set=cropped_label_injury, lambda2=2)
-        label_ac = np.where((label_ac == 1), 2, label_ac)
-        cropped_contour["label"] = np.expand_dims(label_ac, 0)
-        inv_cropped = CropForegroundd(keys=["image", "label"], source_key="label",
-                                            margin=30).inverse(cropped_contour)
-        label_ac = inv_cropped["label"]
-        final_mask_injury = label_ac.astype(np.int8)
-        final_mask = old_mask_organ + final_mask_injury
-        final_mask = np.where((final_mask == 3), 2, final_mask)
-        d["label"] = final_mask
-
-        return d
-
-class injury_postprocessing(MapTransform):
-
-
-    def __init__(
-        self,
-        keys: KeysCollection,
-        dtype: DtypeLike = np.float32,
-        allow_missing_keys: bool = False,
-        settings: dict = {"iterations": 2, "smoothing": 2, "balloon": 0, "threshold": 'auto', 'sigma':2, 'alpha': 7000},
-        organ: str = "Liver",
-    ) -> None:
-        super().__init__(keys, allow_missing_keys)
-        self.settings = settings
-        self.organ = organ
-
-
-
-    def get_connected_components(self, init_label, selected_label, min_size=4000):
-        result = {}
-        removed = {}
-        init_label_ = init_label.copy()
-        foreground = np.where((init_label_ != selected_label), 0, init_label_)
-        labelling, label_count = measure.label(foreground == selected_label, return_num=True)
-        init_clusters = np.unique(labelling, return_counts=True)
-        counter = 0
-        for n in range(1, label_count+1):
-            cluster_size = ndimage.sum(labelling ==n)
-            if cluster_size < min_size:
-                labelling[labelling == n] = 0
-                removed[n] = cluster_size
-                counter +=1
-            else:
-                result[n] = cluster_size
-        for n in range(1, label_count+1):
-            if n in result.keys():
-                labelling[labelling == n] = 2
-        # if counter == label_count:
-        #     labelling = init_label
-        
-        return labelling, init_clusters, result, removed
-
-    def __call__(
-        self, data: Mapping[Hashable, NdarrayOrTensor]
-    ) -> Dict[Hashable, NdarrayOrTensor]:
-        d = dict(data)
-
-        if self.organ == 'Liver': fixed_settings = {'min_injury_size': 7000, 'small_injury_size': 25000, 'cube_size': 2, 'expanding_size' : 2}
-        elif self.organ == 'Spleen': fixed_settings = {'min_injury_size': 500, 'small_injury_size': 5000, 'cube_size': 8, 'expanding_size' : 3}
-        else: print("Select correct organ, options: Liver, Spleen")
-
-        original_label = d["label"].squeeze() 
-        old_old_mask_organ = np.where((original_label != 1), 0, original_label)
-        cropped_injury = CropForegroundd(keys=["image", "label", "tLabel"],  source_key="label",  margin=5)(d)
-        init_label = cropped_injury["label"].squeeze() 
-        old_old_mask_injury = np.where((init_label != 2), 0, init_label) # save only the injury
-        old_mask_injury, init_clusters, result, removed = self.get_connected_components(init_label=old_old_mask_injury.astype(np.int8), selected_label=2, min_size=fixed_settings['min_injury_size']) #liver 7000
-        scanner = cropped_injury["image"].squeeze()
-        gimage = inverse_gaussian_gradient(scanner, sigma=self.settings['sigma'], alpha=self.settings['alpha']) #init sigma 3 a=100
-
-        ls = old_mask_injury
-        injury_size = np.sum(old_mask_injury)/2
-        size = 0
-
-        if injury_size < fixed_settings['small_injury_size']: #spleen 5000
-            dilation_bool= True
-            footprint = cube(fixed_settings['cube_size']) #spleen 8
-            size = fixed_settings['expanding_size'] # 3 spleen
-        else: 
-            dilation_bool= True
-            footprint = ball(1) # 1 para spleen 
-            size = 1
-
-        if size != 0: ls = expand_labels(ls, size) #footprint=cube(2)) expand_labels(ls, 2)
-        ls = closing(ls)
-        ls = morphological_geodesic_active_contour(gimage, num_iter=self.settings['iterations'],  init_level_set=ls, smoothing=self.settings['smoothing'], balloon=self.settings['balloon'],  threshold=self.settings['threshold']) #morphological_chan_vese
-        if dilation_bool: ls = dilation(ls, footprint) 
-
-        cropped_injury["label"] = MetaTensor(torch.tensor(np.expand_dims(ls,0)), meta=cropped_injury["label"].meta, applied_operations = cropped_injury["label"].applied_operations )
-        inv_cropped = CropForegroundd(keys=["image", "label"], source_key="label",  margin=30).inverse(cropped_injury)
-        final_mask_injury = torch.where(((inv_cropped["label"][0]) == 1), 2, 0)
-        final_mask = old_old_mask_organ + final_mask_injury
-        final_mask = np.where((final_mask == 3), 2, final_mask)
-
-        d["label"] =  np.expand_dims(final_mask,0)
-
-        return d
 
 OUT_FOLDER = "out_unet"
 GIF_FOLDER = "nnunet_gifs_full"
 ORGAN = "Liver"
 
-def save_csv(output_path, task_name, data):
-    import csv
 
-    base_path = os.path.join(
-        "U:\\",
-        "lauraalvarez",
-        "nnunet",
-        "nnUNet_raw_data",
-        task_name,
-        OUT_FOLDER,
-        GIF_FOLDER,
-        output_path)
+def create_figs(
+    task_name="Task510_LiverTraumaDGX",
+):  # Task510_LiverTraumaDGX Task511_SpleenTraumaCV
+    """
+    Create the figures for the gif.
 
-    keys = data[0].keys()
-    a_file = open(base_path, "w+")
-    dict_writer = csv.DictWriter(a_file, keys)
-    dict_writer.writeheader()
-    dict_writer.writerows(data)
-    a_file.close()
-
-
-def _save_gif(volume, filename, task_name="Task510_LiverTraumaDGX"):
-    volume = volume.astype(np.float64) / np.max(volume)  # normalize the data to 0 - 1
-    volume = volume * 255  # Now scale by 255
-    volume = volume.astype(np.uint8)
-    base_path = os.path.join(
-        "U:\\",
-        "lauraalvarez",
-        "nnunet",
-        "nnUNet_raw_data",
-        task_name,
-        OUT_FOLDER,
-        GIF_FOLDER)
-    path_to_gif = os.path.join(base_path, f"{filename}.mp4")
-    if not os.path.exists(base_path):
-        print("Creating gifs directory")
-        os.mkdir(base_path)
-    imageio.mimsave(path_to_gif, volume, fps=10)
-    return path_to_gif
-
-
-def create_figs(image_path, prediction_path, label_path, task_name="Task510_LiverTraumaDGX"): #Task510_LiverTraumaDGX Task511_SpleenTraumaCV
-    #Task511_SpleenTraumaCV Task510_LiverTraumaDGX
+    Args:
+        image_path (str): Path to the image.
+        prediction_path (str): Path to the prediction.
+        label_path (str): Path to the label.
+        task_name (str, optional): Name of the task.
+    """
+    # Path to the image
     images = glob.glob(
         os.path.join(
-            "U:\\", #"/mnt", "chansey",# "U:\\",
+            "U:\\",
             "lauraalvarez",
             "nnunet",
             "nnUNet_raw_data",
@@ -377,9 +88,10 @@ def create_figs(image_path, prediction_path, label_path, task_name="Task510_Live
             "*.nii.gz",
         )
     )
+    # Path to the prediction
     predicitions = glob.glob(
         os.path.join(
-            "U:\\", # "/mnt", "chansey",# "U:\\",
+            "U:\\",
             "lauraalvarez",
             "nnunet",
             "nnUNet_raw_data",
@@ -388,9 +100,10 @@ def create_figs(image_path, prediction_path, label_path, task_name="Task510_Live
             "*.nii.gz",
         )
     )
+    # Path to the label
     true_labels = glob.glob(
         os.path.join(
-            "U:\\", #"/mnt", "chansey",# "U:\\",
+            "U:\\",
             "lauraalvarez",
             "nnunet",
             "nnUNet_raw_data",
@@ -400,21 +113,33 @@ def create_figs(image_path, prediction_path, label_path, task_name="Task510_Live
         )
     )
 
-    data_dicts_test = [
-        {"image": image_name, "label": label_name, "tLabel": true_name}
-        for image_name, label_name, true_name in zip(images, predicitions, true_labels)
-    ]
+    data_dicts_test = (
+        [  # list of dictionaries with the paths to the images, predictions and labels
+            {"image": image_name, "label": label_name, "tLabel": true_name}
+            for image_name, label_name, true_name in zip(
+                images, predicitions, true_labels
+            )
+        ]
+    )
 
     csv_list = []
     for data in data_dicts_test[:]:
-        print(f"Infering for image:{data['image']}, label: {data['label']}, true label: {data['tLabel']}")
+        print(
+            f"Infering for image:{data['image']}, label: {data['label']}, true label: {data['tLabel']}"
+        )
         normal_plot = Compose(
             [
-                LoadImaged(keys=["image", "label", "tLabel"]),
-                AsChannelFirstd(keys=["image", "label", "tLabel"]),
-                AddChanneld(keys=["label", "image", "tLabel"]),
-                CropForegroundd(keys=["image", "label", 'tLabel'], source_key="image"),
-                ScaleIntensityRanged(
+                LoadImaged(keys=["image", "label", "tLabel"]),  # load the images
+                AsChannelFirstd(
+                    keys=["image", "label", "tLabel"]
+                ),  # make sure the channel is the first dimension
+                AddChanneld(
+                    keys=["label", "image", "tLabel"]
+                ),  # add a channel dimension
+                CropForegroundd(
+                    keys=["image", "label", "tLabel"], source_key="image"
+                ),  # crop the foreground
+                ScaleIntensityRanged(  # scale the intensity
                     keys=["image"],
                     a_min=-175,
                     a_max=250,
@@ -422,29 +147,73 @@ def create_figs(image_path, prediction_path, label_path, task_name="Task510_Live
                     b_max=1.0,
                     clip=True,
                 ),
-                KeepLargestConnectedComponentd(keys=["label"], applied_labels=[1,2], is_onehot=False, independent=False),
-                injury_postprocessing(keys=["image", "label"],  organ= ORGAN, settings = {"iterations": 2, "smoothing": 2, "balloon": 0, "threshold": 'auto', 'sigma':2, 'alpha': 7000}),
-                EnsureTyped(keys=["label", "image", "tLabel"], data_type='tensor')
+                KeepLargestConnectedComponentd(
+                    keys=["label"],
+                    applied_labels=[1, 2],
+                    is_onehot=False,
+                    independent=False,
+                ),  # keep the largest connected component
+                injury_postprocessing(
+                    keys=["image", "label"],
+                    organ=ORGAN,
+                    settings={
+                        "iterations": 2,
+                        "smoothing": 2,
+                        "balloon": 0,
+                        "threshold": "auto",
+                        "sigma": 2,
+                        "alpha": 7000,
+                    },
+                ),  # postprocess the prediction
+                EnsureTyped(
+                    keys=["label", "image", "tLabel"], data_type="tensor"
+                ),  # make sure the data is a tensor
             ]
         )
 
-        basename = os.path.basename(data["image"])
-        injures = normal_plot(data)
-        post_pred = Compose([AsDiscrete(to_onehot=3)])
-        post_label = Compose([AsDiscrete(to_onehot=3)])
-        outputs = torch.Tensor(np.expand_dims(post_pred(injures["label"]), 0))
-        labels = torch.Tensor(np.expand_dims(post_label(torch.Tensor(injures["tLabel"])), 0))
-        dice_metric = DiceMetric(include_background=False, reduction="mean_batch")
-        jaccard = MeanIoU(include_background=False, reduction="mean_batch")
-        dice_metric(y_pred=outputs, y=labels)
-        jaccard(y_pred=outputs, y=labels)
-        dice_score_organ, dice_score_injury = dice_metric.aggregate()
-        jaccard_score_organ, jaccard_score_injury = jaccard.aggregate()
-        _, precision_organ, recall_organ = adapted_rand_error(labels[:,1,:,:,:].numpy().astype(int), outputs[:,1,:,:,:].numpy().astype(int))
-        _, precision_injury, recall_injury = adapted_rand_error(labels[:,2,:,:,:].numpy().astype(int), outputs[:,2,:,:,:].numpy().astype(int))
+        basename = os.path.basename(data["image"])  # get the basename of the image
+        injures = normal_plot(data)  # apply the transforms
 
+        # Note: metrics can also be computed runing the file run_metrics (faster inference)
+        post_pred = Compose(
+            [AsDiscrete(to_onehot=3)]
+        )  # transform the prediction to onehot
+        post_label = Compose([AsDiscrete(to_onehot=3)])  # transform the label to onehot
+        outputs = torch.Tensor(
+            np.expand_dims(post_pred(injures["label"]), 0)
+        )  # convert to tensor
+        labels = torch.Tensor(
+            np.expand_dims(post_label(torch.Tensor(injures["tLabel"])), 0)
+        )  # convert to tensor
+        dice_metric = DiceMetric(
+            include_background=False, reduction="mean_batch"
+        )  # initialize the dice metric
+        jaccard = MeanIoU(
+            include_background=False, reduction="mean_batch"
+        )  # initialize the jaccard metric
+        dice_metric(y_pred=outputs, y=labels)  # compute the dice metric
+        jaccard(y_pred=outputs, y=labels)  # compute the jaccard metric
+        (
+            dice_score_organ,
+            dice_score_injury,
+        ) = dice_metric.aggregate()  # get the dice score
+        (
+            jaccard_score_organ,
+            jaccard_score_injury,
+        ) = jaccard.aggregate()  # get the jaccard score
+        _, precision_organ, recall_organ = adapted_rand_error(
+            labels[:, 1, :, :, :].numpy().astype(int),
+            outputs[:, 1, :, :, :].numpy().astype(int),
+        )  # compute the precision and recall
+        _, precision_injury, recall_injury = adapted_rand_error(
+            labels[:, 2, :, :, :].numpy().astype(int),
+            outputs[:, 2, :, :, :].numpy().astype(int),
+        )  # compute the precision and recall
+
+        # untoogle if you want to run a multiorgan segmentation
         # dice_score_organ_1, dice_score_organ_2, dice_score_injure_1, dice_score_injure_2 = dice_metric.aggregate()
 
+        # save the results in a csv file
         dict_data = {
             "image": basename,
             "dice_score_organ": dice_score_organ.numpy(),
@@ -460,18 +229,31 @@ def create_figs(image_path, prediction_path, label_path, task_name="Task510_Live
         csv_list.append(dict_data)
         save_gif = True
 
-        if save_gif == True:
+        if save_gif == True:  # save the gif
+            post_plotting = Compose(
+                [AsDiscrete(argmax=False), EnsureType(data_type="tensor")]
+            )  # transform the prediction to onehot
+            injures["label"] = post_plotting(
+                injures["label"]
+            )  # post process the prediction
+            inj = dict(injures)  # convert to dictionary
+            inj = Resized(
+                keys=["image", "label", "tLabel"], spatial_size=(512, 512, 512)
+            )(
+                inj
+            )  # resize the images
+            blended_label_in = blend_images(
+                inj["image"], inj["label"], 0.5
+            )  # blend the prediction with the image
+            blended_final = blended_label_in.permute(1, 2, 0, 3)  # permute the images
+            blended_true_label = blend_images(
+                inj["image"], inj["tLabel"], 0.5
+            ).numpy()  # blend the golden label with the image
+            blended_true_label = torch.from_numpy(blended_true_label).permute(
+                1, 2, 0, 3
+            )  # permute the images
 
-            post_plotting = Compose([AsDiscrete(argmax=False), EnsureType(data_type='tensor')])
-            injures["label"] = post_plotting(injures["label"])
-            inj = dict(injures)
-            inj = Resized(keys=["image", "label", "tLabel"], spatial_size=(512, 512, 512))(inj)
-            blended_label_in = blend_images(inj["image"], inj["label"], 0.5)
-            blended_final = blended_label_in.permute(1, 2, 0, 3)
-            blended_true_label = blend_images(inj["image"], inj["tLabel"], 0.5).numpy()
-            blended_true_label = torch.from_numpy(blended_true_label).permute(1, 2, 0, 3)
-
-            volume = torch.hstack(
+            volume = torch.hstack(  # stack the images in the Y axis
                 (
                     inj["image"].permute(1, 2, 0, 3).repeat(1, 1, 3, 1),
                     blended_final,
@@ -480,17 +262,19 @@ def create_figs(image_path, prediction_path, label_path, task_name="Task510_Live
             )
             volume = volume.permute(0, 1, 3, 2)
 
-            volume_path = _save_gif(volume.numpy(), f"{basename}", task_name)
-            # _save_gif(blended_true_label.numpy().transpose(0, 1, 3, 2), f"{basename}_True", task_name)
-            # _save_gif(blended_final.numpy().transpose(0, 1, 3, 2), f"{basename}_Pred", task_name)
-
+            volume_path = save_gif(
+                volume.numpy(), f"{basename}", task_name, OUT_FOLDER, GIF_FOLDER
+            )  # save the gif/video
             print(f"Saved {volume_path}")
-        save_csv("summary.csv",task_name, csv_list)
+
+        save_csv(
+            "summary.csv", task_name, csv_list, OUT_FOLDER, GIF_FOLDER
+        )  # save the csv file
     print("Finished")
 
 
 def main():
-    create_figs("", "", "")  # TODO Desharcodear
+    create_figs()  # TODO Desharcodear
 
 
 if __name__ == "__main__":
