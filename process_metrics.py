@@ -59,6 +59,7 @@ for i, path in enumerate(paths_to_analyze):
             writer.writerow(new_row)
             new_row = get_info(items, "2")
             writer.writerow(new_row)
+            # Untoggle for multiclass segmentation
             # new_row = get_info(items, "3")
             # writer.writerow(new_row)
             # new_row = get_info(items, "4")
