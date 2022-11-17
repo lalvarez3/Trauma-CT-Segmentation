@@ -1,6 +1,7 @@
 # Machine Learning in Acute Care: Liver & Spleen
 Authors: Laura Alvarez, Thomas Ramakers, Amin Mohseni, Ashley Remi, Rozemarie van den Bergh, Guido de Jong, Alireza Bayat, Tip Stille, Monique Brink, Erik Hermans, Silvan Quax, Bram van Ginneken and Vincent Stirler
 
+Do you have questions? Do you want to know more about me, the project, code or data? Drop me an email -> laura.alvarezf22@gmail.com
 
 # Repository
 
