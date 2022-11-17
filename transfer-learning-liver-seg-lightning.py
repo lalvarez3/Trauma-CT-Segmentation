@@ -258,17 +258,16 @@ class Net(pytorch_lightning.LightningModule):
         # Create the training dataset
         train_transforms = Compose(
             [
-                LoadImaged(keys=["image", "label"]),
-                RemoveDicts(keys=["image", "label"]),
-                AddChanneld(keys=["image", "label"]),
-                # Orientationd(keys=["image", "label"], axcodes="RAS"),
-                Spacingd(
+                LoadImaged(keys=["image", "label"]), # Load the image and label
+                RemoveDicts(keys=["image", "label"]), # Remove the image and label from the dictionary
+                AddChanneld(keys=["image", "label"]), # Add a channel dimension to the image and label
+                Spacingd( # Resample the image and label to the desired spacing
                     keys=["image", "label"],
                     pixdim=(1.5, 1.5, 2),
                     mode=("bilinear", "nearest"),
                 ),
-                CropForegroundd(keys=["image", "label"], source_key="image"),
-                ScaleIntensityRanged(
+                CropForegroundd(keys=["image", "label"], source_key="image"), # Crop the image and label to the foreground
+                ScaleIntensityRanged( # Scale the image intensity to the desired range
                     keys=["image"],
                     a_min=-175,
                     a_max=250,
@@ -276,8 +275,8 @@ class Net(pytorch_lightning.LightningModule):
                     b_max=1.0,
                     clip=True,
                 ),
-                ToTensord(keys=["image", "label"]),
-                RandCropByLabelClassesd(
+                ToTensord(keys=["image", "label"]), # Convert the image and label to tensors
+                RandCropByLabelClassesd( # Randomly crop the image and label based on the ratios selected for each of the classes
                     keys=["image", "label"],
                     label_key="label",
                     spatial_size=PATCH_SIZE,
@@ -285,32 +284,32 @@ class Net(pytorch_lightning.LightningModule):
                     num_classes=self.n_output,
                     num_samples=2,
                 ),
-                RandFlipd(
+                RandFlipd( # Randomly flip the image and label axis 0
                     keys=["image", "label"],
                     spatial_axis=[0],
                     prob=0.10,
                 ),
-                RandFlipd(
+                RandFlipd( # Randomly flip the image and label axis 1
                     keys=["image", "label"],
                     spatial_axis=[1],
                     prob=0.10,
                 ),
                 RandFlipd(
-                    keys=["image", "label"],
+                    keys=["image", "label"], # Randomly flip the image and label axis 2
                     spatial_axis=[2],
                     prob=0.10,
                 ),
-                RandRotate90d(
+                RandRotate90d( # Randomly rotate the image and label 90 degrees
                     keys=["image", "label"],
-                    prob=0.10,
+                    prob=0.10, 
                     max_k=3,
                 ),
-                RandShiftIntensityd(
+                RandShiftIntensityd( # Randomly shift the image intensity
                     keys=["image"],
                     offsets=0.10,
                     prob=0.40,
                 ),
-                Rand3DElasticd(
+                Rand3DElasticd( # Randomly apply elastic deformation to the image and label
                     keys=["image", "label"],
                     prob=0.10,
                     sigma_range=(5, 10),
@@ -326,7 +325,6 @@ class Net(pytorch_lightning.LightningModule):
                 LoadImaged(keys=["image", "label"]),
                 RemoveDicts(keys=["image", "label"]),
                 AddChanneld(keys=["image", "label"]),
-                # Orientationd(keys=["image", "label"], axcodes="RAS"),
                 Spacingd(
                     keys=["image", "label"],
                     pixdim=(1.5, 1.5, 2),
@@ -348,7 +346,6 @@ class Net(pytorch_lightning.LightningModule):
         pred_transforms = Compose(
             [
                 LoadImaged(keys=["image", "label"]),
-                # RemoveDicts(keys=["image", "label"]),
                 AddChanneld(keys=["image", "label"]),
                 ScaleIntensityRanged(
                     keys=["image"],
@@ -365,7 +362,7 @@ class Net(pytorch_lightning.LightningModule):
         self.train_ds = CacheDataset(
             data=train_files,
             transform=train_transforms,
-            cache_rate=0.4,
+            cache_rate=0.4, # Cache 40% of the training data
         ) # Create the training dataset
 
         self.val_ds = Dataset(data=val_files, transform=val_transforms) # Create the validation dataset
@@ -518,7 +515,7 @@ class Net(pytorch_lightning.LightningModule):
             or dice_injury - self.best_val_dice > 0.05
             or self.current_epoch == self.trainer.max_epochs - 1
         ): 
-            test_dt = wandb.Table(
+            test_dt = wandb.Table( # Create a wandb table to store the predictions
                 columns=[
                     "epoch",
                     "filename",
@@ -585,11 +582,11 @@ class Net(pytorch_lightning.LightningModule):
         print("predicting...")
         images, labels = batch["image"], batch["label"] # Get the images and labels
 
-        post_pred = Compose(
+        post_pred = Compose( 
             [
                 EnsureType(),
                 AsDiscrete(argmax=True, to_onehot=3),
-                KeepLargestConnectedComponent(
+                KeepLargestConnectedComponent( 
                     [1, 2], is_onehot=True, independent=False
                 ),
             ]
